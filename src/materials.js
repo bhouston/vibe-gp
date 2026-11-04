@@ -207,7 +207,7 @@ export function landBlend(base, baseRough) {
  * around the circuit (within the floodlit venue, from `floodLit`), emissive so the
  * floodlight mask doesn't darken it.
  */
-export function pavedMaterial({ paint = [0x35587e, 0x474b52], glow = null } = {}, nightU = null, floodLit = null) {
+export function pavedMaterial({ paint = [0x4a4c50, 0x4a4c50], glow = null } = {}, nightU = null, floodLit = null) {
   const m = new THREE.MeshStandardNodeMaterial();
   const p = positionWorld.xz;
   const g = attribute('grass', 'vec4');
@@ -257,7 +257,7 @@ export function pavedMaterial({ paint = [0x35587e, 0x474b52], glow = null } = {}
  * plain dusty tarmac, or painted (paint = [a, b]) in 3 m diagonal bands of the two
  * colours, worn darker where cars run wide.
  */
-export function runoffMaterial(paint = null, pattern = 'diagonal') {
+export function runoffMaterial(paint = null, pattern = 'diagonal', edge = 8.6) {
   const m = new THREE.MeshStandardNodeMaterial();
   const p = positionWorld.xz;
   const dist = length(cameraPosition.sub(positionWorld));
@@ -269,10 +269,21 @@ export function runoffMaterial(paint = null, pattern = 'diagonal') {
   if (paint) {
     // diagonal: 3 m bands across at 45 degrees; along: 1.5 m bands parallel to the track;
     // solid: the first colour only
-    const band = pattern === 'along' ? abs(uv().y).div(3.0) : uv().x.add(abs(uv().y)).div(6.0);
-    const aa = fwidth(band).add(0.001);
-    const b = pattern === 'solid' ? float(0) : smoothstep(float(0.5).sub(aa), float(0.5).add(aa), fract(band));
-    c = mix(color(paint[0]), color(paint[1] ?? paint[0]), b);
+    // or a list of [metres, colour] bands running outward from `edge` (the kerb's outer edge)
+    if (Array.isArray(pattern)) {
+      const out = abs(uv().y).sub(edge);
+      let at = 0;
+      c = color(pattern[0][1]);
+      for (let k = 1; k < pattern.length; k++) {
+        at += pattern[k - 1][0];
+        c = mix(c, color(pattern[k][1]), smoothstep(at - 0.4, at + 0.4, out));
+      }
+    } else {
+      const band = pattern === 'along' ? abs(uv().y).div(3.0) : uv().x.add(abs(uv().y)).div(6.0);
+      const aa = fwidth(band).add(0.001);
+      const b = pattern === 'solid' ? float(0) : smoothstep(float(0.5).sub(aa), float(0.5).add(aa), fract(band));
+      c = mix(color(paint[0]), color(paint[1] ?? paint[0]), b);
+    }
     c = mix(c, color(0x26272a), smoothstep(0.62, 0.88, wear).mul(0.5));
     c = c.mul(grain.mul(0.1).add(0.95));
   } else {

@@ -2,6 +2,8 @@
 // once by an OfflineAudioContext into a seamless looping buffer. A live note scheduler
 // would stutter whenever the main thread is busy (track builds, shader compiles); a
 // buffer keeps playing through all of that, and the render itself runs off the main thread.
+// It renders in short sections that are mixed together: a render's cost grows with its
+// length times its number of notes, so one long render takes about a minute.
 //
 // 32 bars at 124 BPM (about a minute) in A minor:
 //   bars  1-8   verse, the groove on its own
@@ -13,6 +15,7 @@ const BPM = 124;
 const BEAT = 60 / BPM;
 const BAR = BEAT * 4;
 const BARS = 32;
+const SECTION = 4; // bars per render
 const TAIL = 4; // s rendered past the end, then folded onto the start so echoes wrap around the loop
 
 const hz = (midi) => 440 * 2 ** ((midi - 69) / 12);
@@ -72,9 +75,9 @@ function reverbImpulse(ctx, seconds) {
   return b;
 }
 
-/** Render the whole track and return it as an AudioBuffer ready to loop. */
-export async function renderMusic(sampleRate) {
-  const length = BARS * BAR;
+/** Render bars first..last-1, plus their tail. Time 0 of the result is the start of bar `first`. */
+function renderBars(first, last, sampleRate) {
+  const length = (last - first) * BAR;
   const ctx = new OfflineAudioContext(2, Math.ceil((length + TAIL) * sampleRate), sampleRate);
   const noise = noiseBuffer(ctx, 1);
 
@@ -97,7 +100,7 @@ export async function renderMusic(sampleRate) {
   // everything but the drums ducks on each beat, under the kick
   const pumped = ctx.createGain();
   pumped.connect(master);
-  for (let i = 0; i < BARS * 4; i++) {
+  for (let i = 0; i < (last - first) * 4; i++) {
     pumped.gain.setValueAtTime(0.6, i * BEAT);
     pumped.gain.linearRampToValueAtTime(1, i * BEAT + BEAT * 0.6);
   }
@@ -172,7 +175,8 @@ export async function renderMusic(sampleRate) {
   }
 
   SONG.forEach(([root, ...pad], bar) => {
-    const t0 = bar * BAR;
+    if (bar < first || bar >= last) return;
+    const t0 = (bar - first) * BAR;
     const chorus = bar >= 16 && bar < 24;
     const intro = bar < 4; // the track starts on the pad, bass and arp, then the drums join
 
@@ -233,22 +237,34 @@ export async function renderMusic(sampleRate) {
     }
   }
   const play = (line, firstBar, transpose = 0) => {
-    for (const [bar, beat, beats, n] of line) lead((firstBar + bar) * BAR + beat * BEAT, beats, n + transpose);
+    for (const [bar, beat, beats, n] of line) {
+      const at = firstBar + bar;
+      if (at >= first && at < last) lead((at - first) * BAR + beat * BEAT, beats, n + transpose);
+    }
   };
   play(LEAD_VERSE, 8);
   play(LEAD_CHORUS, 16);
   play(LEAD_VERSE, 24, 12);
 
-  const rendered = await ctx.startRendering();
+  return ctx.startRendering();
+}
 
-  // fold the tail back onto the start, so the echoes and reverb carry across the loop point
-  const n = Math.round(length * sampleRate);
+/** Render the whole track and return it as an AudioBuffer ready to loop. */
+export async function renderMusic(sampleRate) {
+  const starts = Array.from({ length: BARS / SECTION }, (_, i) => i * SECTION);
+  const sections = await Promise.all(starts.map((bar) => renderBars(bar, bar + SECTION, sampleRate)));
+
+  // mix the sections at their places; the tails run into the next section, and the last one
+  // wraps onto the start, so the echoes and reverb carry across the loop point
+  const n = Math.round(BARS * BAR * sampleRate);
   const out = new AudioBuffer({ numberOfChannels: 2, length: n, sampleRate });
   let peak = 0;
   const channels = [0, 1].map((c) => {
-    const src = rendered.getChannelData(c);
-    const dst = src.slice(0, n);
-    for (let i = n; i < src.length; i++) dst[i - n] += src[i];
+    const dst = new Float32Array(n);
+    sections.forEach((section, k) => {
+      const src = section.getChannelData(c), at = Math.round(starts[k] * BAR * sampleRate);
+      for (let i = 0; i < src.length; i++) dst[(at + i) % n] += src[i];
+    });
     for (const v of dst) peak = Math.max(peak, Math.abs(v));
     return dst;
   });

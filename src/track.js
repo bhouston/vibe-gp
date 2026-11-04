@@ -344,7 +344,7 @@ export class Track {
     // paved run-off (runoff `paved` entries): from the track edge (under the kerb) out to
     // the barrier, or to where a gravel trap starts
     const asphaltRunoff = layered(runoffMaterial(), 1);
-    const paintMats = P.paints.map((p) => layered(runoffMaterial(p, p[2]), 1));
+    const paintMats = P.paints.map((p) => layered(runoffMaterial(p, p[2], P.bankEdge), 1));
     for (const side of [1, -1]) {
       const kinds = side > 0 ? P.pavedL : P.pavedR;
       const wall = side > 0 ? P.wallL : P.wallR, tyre = side > 0 ? P.tyreL : P.tyreR;

@@ -633,7 +633,8 @@ export class TrackPath {
     this.paints = [[...(spec.paint ?? [0x2f6db5, 0xc8202a]), spec.paintPattern ?? 'diagonal']];
     const paintIndex = (c, pattern = 'diagonal') => {
       const pair = Array.isArray(c) ? [c[0], c[1] ?? c[0], pattern] : [c, c, pattern];
-      let k = this.paints.findIndex((p) => p[0] === pair[0] && p[1] === pair[1] && p[2] === pair[2]);
+      const same = (a, b) => (Array.isArray(a) ? JSON.stringify(a) === JSON.stringify(b) : a === b);
+      let k = this.paints.findIndex((p) => p[0] === pair[0] && p[1] === pair[1] && same(p[2], pair[2]));
       if (k < 0) k = this.paints.push(pair) - 1;
       return k;
     };
@@ -643,7 +644,8 @@ export class TrackPath {
       const strip = obj ? obj.strip : e[5];
       const w = kind === 2 && strip > 0 ? hw + KERB_WIDTH + strip : Infinity;
       const grass = obj?.beyond === 'grass' || (!obj && e[6] === 'grass') ? 1 : 0;
-      const pi = obj?.paint !== undefined || obj?.pattern ? paintIndex(obj.paint ?? this.paints[0], obj.pattern) : 0;
+      const pi = obj?.bands ? paintIndex(obj.bands[0][1], obj.bands)
+        : obj?.paint !== undefined || obj?.pattern ? paintIndex(obj.paint ?? this.paints[0], obj.pattern) : 0;
       const L = sgn > 0;
       for (let d = a; d <= b; d++) {
         const i = this.wrap(i0 + d);

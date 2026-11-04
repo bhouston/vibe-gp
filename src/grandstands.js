@@ -67,6 +67,9 @@ function chooseSites(P) {
     if (best < 0) return null;
     return { i: best, lateral: (x - P.px[best]) * P.leftX(best) + (z - P.pz[best]) * P.leftZ(best) };
   };
+  // automatic stands want level ground and elbow room; listed real ones are stepped up hills
+  // in short sections, each nearly touching the next
+  let maxRise = 4, standGap = 8;
   const fits = (i, side, L, depth) => {
     const f = frame(i, side);
     // level enough?
@@ -77,7 +80,7 @@ function chooseSites(P) {
       lo = Math.min(lo, h);
       hi = Math.max(hi, h);
     }
-    if (hi - lo > 4) return null;
+    if (hi - lo > maxRise) return null;
     for (let x = -L / 2; x <= L / 2 + 0.1; x += 8) {
       for (const z of [-1, depth / 2, depth + 2]) {
         const wx = f.ox + f.ax * x + f.dx * z, wz = f.oz + f.az * x + f.dz * z;
@@ -86,7 +89,9 @@ function chooseSites(P) {
         if (P.pit) {
           const pq = P.pit.query(wx, wz);
           const d = Math.hypot(wx - P.pit.px[pq.j], wz - P.pit.pz[pq.j]);
-          if (d < P.pit.outerHw(pq.j) + PIT.wallClear + 24) return null;
+          // (a listed stand across the track from the pits only has to clear the lane itself)
+          const clear = standGap === 1 && side !== P.pit.side ? 3 : 24;
+          if (d < P.pit.outerHw(pq.j) + PIT.wallClear + clear) return null;
         }
       }
     }
@@ -94,7 +99,7 @@ function chooseSites(P) {
   };
   const clearOfOthers = (f, L, depth) => sites.every((o) => {
     const d = Math.hypot(f.ox + f.dx * depth / 2 - (o.f.ox + o.f.dx * o.depth / 2), f.oz + f.dz * depth / 2 - (o.f.oz + o.f.dz * o.depth / 2));
-    return d > (L + o.L) / 2 + 8;
+    return d > (L + o.L) / 2 + standGap;
   });
   const tryAdd = (i, side, lengths, rows, main) => {
     const depth = rows * ROW_DEPTH;
@@ -112,13 +117,23 @@ function chooseSites(P) {
   // each entry [at, side, from, to, rows] split into stands of up to 150 m along the lap
   const real = P.def.land?.stands;
   if (real?.length) {
+    maxRise = 7;
+    standGap = 1;
     P.resolveEntries(real, (i0, sgn, a, b, e) => {
       if (!sgn) return;
-      const rows = e[4] ?? 12, total = (b - a) * ds, n = Math.max(1, Math.ceil(total / 150));
+      const rows = e[4] ?? 12, total = (b - a) * ds;
+      let lo = Infinity, hi = -Infinity;
+      for (let d = a; d <= b; d++) {
+        const h = P.roadY(P.wrap(i0 + d), sgn * 1000);
+        lo = Math.min(lo, h);
+        hi = Math.max(hi, h);
+      }
+      // up to 150 m each, shorter on a slope (about 3.5 m of climb each), never under 30 m
+      const n = Math.max(1, Math.min(Math.ceil(total / 30), Math.max(Math.ceil(total / 150), Math.ceil((hi - lo) / 3.5))));
       const each = total / n;
       for (let k = 0; k < n; k++) {
         const mid = P.wrap(i0 + a + Math.round(((k + 0.5) * each) / ds));
-        const L = Math.max(30, each - 6);
+        const L = Math.max(24, each - 2);
         tryAdd(mid, sgn, [L, L * 0.8, L * 0.6, L * 0.4], rows, k === 0 && rows >= 14);
       }
     });

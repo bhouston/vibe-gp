@@ -92,10 +92,13 @@ out body geom;`];
   if (existsSync(cacheFile)) {
     data = JSON.parse(readFileSync(cacheFile, 'utf8'));
     if (!data.raceways) {
-      const extra = await overpass(`[out:json][timeout:120];(way["highway"="raceway"](${bbox}););out body geom;`, id);
-      data.elements.push(...extra.elements);
-      data.raceways = true;
-      writeFileSync(cacheFile, JSON.stringify(data));
+      // (optional extra: if Overpass is busy, carry on without it and try again next run)
+      const extra = await overpass(`[out:json][timeout:50];(way["highway"="raceway"](${bbox}););out body geom;`, id).catch(() => null);
+      if (extra) {
+        data.elements.push(...extra.elements);
+        data.raceways = true;
+        writeFileSync(cacheFile, JSON.stringify(data));
+      } else console.log(`  ${id}: no raceway data this run`);
     }
   }
   else {
@@ -277,15 +280,15 @@ async function overpass(query, id) {
         method: 'POST',
         body: 'data=' + encodeURIComponent(query),
         headers: { 'User-Agent': 'vibe-gp-land-import/1.0', 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
-        signal: AbortSignal.timeout(180000),
+        signal: AbortSignal.timeout(60000),
       });
       if (r.ok) return await r.json();
       console.log(`  ${id} raceway query: ${url} -> ${r.status}`);
     } catch (e) {
       console.log(`  ${id} raceway query: ${url} -> ${e.message}`);
     }
-    if (tries > 8) throw new Error(`Overpass failed for ${id}`);
-    await new Promise((res) => setTimeout(res, 5000 * (tries + 1)));
+    if (tries >= 2) throw new Error(`Overpass failed for ${id}`);
+    await new Promise((res) => setTimeout(res, 3000));
   }
 }
 

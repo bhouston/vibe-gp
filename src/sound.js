@@ -6,23 +6,37 @@
 //       car   engine, tyres, impacts: quieter and duller the further the camera is
 //       wind  on-board only: there is no rushing air at a trackside camera
 //
-// Engine: one signal (the crank's four-stroke cycle frequency, from physics.rpm) drives
-// every voice, so the harmonics stay locked together and the pitch follows the wheels,
-// wheelspin and gear changes included. The voices are a PeriodicWave for the exhaust with
-// its energy on the firing orders of a V6 (6 pulses per cycle), a brighter one faded in by
-// the throttle, combustion rasp (noise gated at the firing frequency), and the turbo whine.
+// Engine: built from the measured spectrum of a real hybrid V6 (engineProfile.js). One
+// signal (the four-stroke cycle frequency, from physics.rpm) drives every voice, so the
+// harmonics stay locked together and the pitch follows the wheels, wheelspin and gear
+// changes included.
+//   banks  oscillators with the measured harmonic levels, one wave for on throttle and one
+//          for off, slightly apart in stereo
+//   noise  the broadband floor between the harmonics, pulsing with the engine's main note
+//   turbo  the turbo whine
+// The harmonics and the noise then pass through FIR filters with the measured fixed
+// resonances: the harmonics sweep through those as the revs change. No two combustion
+// cycles are the same, so a little random pitch and level wander runs through it all,
+// most at idle, where it gives the engine its lope.
 //
 // Tyres: a layer per kind of ground, mixed by how many wheels are on it and panned to the
 // side those wheels are on, so a pair of wheels dropping onto the grass is heard on that
 // side. Kerb ridges buzz at speed / ridge spacing, from the surface's own bumpWavelength.
-// Tyres sliding on a paved surface squeal; on loose ground they just dig in louder.
+// A car really sliding on a paved surface (body sideways, wheelspin, lock-up) scrubs with a
+// high hiss; normal cornering is silent, since the steering assist holds the front tyres
+// past their grip peak in every turn. On loose ground sliding tyres just dig in louder.
 //
 // Browsers only start audio after a user gesture, so nothing is created until the first
 // key press or click; until then update() just throws away the collisions it is given.
 
 import { renderMusic } from './music.js';
+import { BANDS_HZ, ENGINE } from './engineProfile.js';
 
 const REDLINE = 13000; // rpm at physics.rpm = 1 (its idle, 0.45, is then a realistic ~5800)
+// set by comparing the game's output with the recording, through the same analysis
+const HARMONIC_LEVEL = 9;
+const NOISE_LEVEL = 85;
+const TIMING_JITTER = 0.05; // of the cycle frequency, per unit of the noise source
 const SOUND_SPEED = 343; // m/s, for the Doppler shift at the TV cameras
 
 // what you hear from each camera; tone = lowpass cutoff on everything from the car
@@ -38,6 +52,7 @@ const LAYER_OF = { asphalt: 'road', runoff: 'road', kerb: 'kerb', sausage: 'kerb
 const LAYERS = ['road', 'kerb', 'grass', 'sand'];
 
 const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const clampPan = (x) => clamp(x, -1, 1);
 
 /** Small seeded generator: the engine's harmonics are the same on every run. */
 function rng(seed) {
@@ -110,23 +125,37 @@ function wanderBuffer(ctx, seconds, rate) {
   return buffer;
 }
 
-/**
- * A V6 exhaust as harmonics of the four-stroke cycle: a firing order every 6th harmonic,
- * the bank-to-bank order on every 3rd, and a little of everything else for the unevenness
- * between cylinders. `bright` is how slowly the harmonics fall away.
- */
-function exhaustWave(ctx, bright, seed) {
-  const N = 110;
+/** A wave with the measured harmonic levels (dB per order); `seed` sets the random phases. */
+function engineWave(ctx, orders, seed) {
   const random = rng(seed);
-  const real = new Float32Array(N), imag = new Float32Array(N);
-  for (let k = 1; k < N; k++) {
-    const order = k / 6;
-    const a = (k % 6 === 0 ? 1 : k % 3 === 0 ? 0.42 : 0.1 + random() * 0.1) / order ** (1.7 - bright);
-    const phase = random() * Math.PI * 2;
-    real[k] = a * Math.cos(phase);
-    imag[k] = a * Math.sin(phase);
-  }
+  const real = new Float32Array(orders.length + 1), imag = new Float32Array(orders.length + 1);
+  orders.forEach((db, i) => {
+    const a = 10 ** (db / 20), phase = random() * Math.PI * 2;
+    real[i + 1] = a * Math.cos(phase);
+    imag[i + 1] = a * Math.sin(phase);
+  });
   return ctx.createPeriodicWave(real, imag);
+}
+
+/** Linear-phase FIR with the magnitude response `db` at BANDS_HZ, as a mono buffer for a ConvolverNode. */
+function firBuffer(ctx, db, taps = 2048) {
+  const sr = ctx.sampleRate, bins = taps / 2;
+  const gains = new Float32Array(bins + 1);
+  for (let m = 0, b = 0; m <= bins; m++) {
+    const f = (m * sr) / taps;
+    while (b < BANDS_HZ.length - 2 && BANDS_HZ[b + 1] < f) b++;
+    const u = clamp(Math.log(Math.max(f, 1) / BANDS_HZ[b]) / Math.log(BANDS_HZ[b + 1] / BANDS_HZ[b]));
+    gains[m] = 10 ** ((db[b] * (1 - u) + db[b + 1] * u) / 20);
+  }
+  const buffer = ctx.createBuffer(1, taps, sr);
+  const h = buffer.getChannelData(0);
+  const cos = Float32Array.from({ length: taps }, (_, i) => Math.cos((2 * Math.PI * i) / taps));
+  for (let n = 0; n < taps; n++) {
+    let sum = gains[0];
+    for (let m = 1; m < bins; m++) sum += 2 * gains[m] * cos[(m * (n - bins) + taps * bins) % taps];
+    h[n] = (sum / taps) * (0.5 - 0.5 * cos[n]); // Hann window
+  }
+  return buffer;
 }
 
 export class Sound {
@@ -211,7 +240,7 @@ export class Sound {
 
   buildBuses() {
     const { ctx } = this;
-    const limiter = ctx.createDynamicsCompressor();
+    const limiter = (this.limiter = ctx.createDynamicsCompressor());
     limiter.threshold.value = -9;
     limiter.knee.value = 6;
     limiter.ratio.value = 14;
@@ -247,41 +276,58 @@ export class Sound {
       return o;
     };
 
-    const body = this.gain(1); // into the saturation
-    this.engineOff = this.gain(0.5); // closed throttle: the mellow exhaust
-    this.engineOn = this.gain(0); // open throttle: the hard, bright one
-    const calm = exhaustWave(ctx, 0.3, 11), hard = exhaustWave(ctx, 0.95, 23);
-    voice(calm, -4).connect(this.engineOff);
-    voice(calm, 5).connect(this.engineOff);
-    voice(hard, -3).connect(this.engineOn);
-    voice(hard, 4).connect(this.engineOn);
-    this.engineOff.connect(body);
-    this.engineOn.connect(body);
+    const convolver = (db) => {
+      const c = ctx.createConvolver();
+      c.normalize = false;
+      c.buffer = firBuffer(ctx, db);
+      return c;
+    };
 
-    // combustion rasp: noise opened and closed at the firing frequency
-    const firing = ctx.createOscillator();
-    firing.frequency.value = 0;
-    const six = this.gain(6);
-    cycle.connect(six).connect(firing.frequency);
-    firing.start();
-    this.rasp = this.gain(0);
-    const gate = this.gain(0.5);
-    const depth = this.gain(0.5);
-    firing.connect(depth).connect(gate.gain);
-    this.loop('white').connect(this.filter('bandpass', 2600, 0.8)).connect(gate).connect(this.rasp).connect(body);
+    // combustion varies from cycle to cycle: the same wander shakes the pitch and the level
+    const wander = this.loop('wander', 3.5);
+    this.pitchJitter = this.gain(0);
+    wander.connect(this.pitchJitter).connect(cycle.offset);
+    this.rough = this.gain(1);
+    this.roughDepth = this.gain(0);
+    wander.connect(this.roughDepth).connect(this.rough.gain);
+    // and each firing lands a little early or late: fast timing jitter, which smears the
+    // high harmonics more than the low ones, as in the recordings
+    this.timingJitter = this.gain(0);
+    this.loop('pink').connect(this.filter('lowpass', 220, 0.5)).connect(this.timingJitter).connect(cycle.offset);
 
-    // saturation, then a lowpass that the throttle and the revs open up
-    const shaper = ctx.createWaveShaper();
-    const curve = new Float32Array(2048);
-    for (let i = 0; i < curve.length; i++) curve[i] = Math.tanh(((i / 1023.5) - 1) * 2.4);
-    shaper.curve = curve;
-    shaper.oversample = '2x';
-    this.engineTone = this.filter('lowpass', 1500, 0.6);
-    const presence = this.filter('peaking', 1150, 0.9);
-    presence.gain.value = 3;
+    // the harmonics: per bank, the on- and off-throttle waves
+    this.banks = [[11, 23, -4, -0.25], [17, 31, 5, 0.25]].map(([offSeed, onSeed, detune, pan]) => {
+      const off = this.gain(1), on = this.gain(0);
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = pan;
+      voice(engineWave(ctx, ENGINE.off.orders, offSeed), detune).connect(off).connect(panner);
+      voice(engineWave(ctx, ENGINE.on.orders, onSeed), -detune).connect(on).connect(panner);
+      panner.connect(this.rough);
+      return { on, off };
+    });
+    this.engineTone = this.filter('lowpass', 16000, 0.5);
     this.engineGain = this.gain(0);
     this.shift = this.gain(1); // ducks through each gear change
-    body.connect(shaper).connect(this.engineTone).connect(presence).connect(this.engineGain).connect(this.shift).connect(this.carBus);
+    // the recordings carry a comb: notches at odd multiples of 472 Hz, peaks at multiples of
+    // 944 Hz. That is one reflection arriving 1.06 ms late (about 36 cm of extra path).
+    const reflection = ctx.createDelay(0.01);
+    reflection.delayTime.value = 0.00106;
+    const reflected = this.gain(0.5);
+    this.shift.connect(reflection).connect(reflected).connect(this.carBus);
+    this.rough.connect(convolver(ENGINE.on.resonance)).connect(this.engineTone).connect(this.engineGain).connect(this.shift);
+    this.shift.connect(this.carBus);
+
+    // the noise floor, pulsing with the main note (order 3)
+    const note = ctx.createOscillator();
+    note.frequency.value = 0;
+    const three = this.gain(3);
+    cycle.connect(three).connect(note.frequency);
+    note.start();
+    const pulse = this.gain(0.9);
+    const pulseDepth = this.gain(0.1);
+    note.connect(pulseDepth).connect(pulse.gain);
+    this.noiseGain = this.gain(0);
+    this.loop('white').connect(pulse).connect(convolver(ENGINE.on.noise)).connect(this.noiseGain).connect(this.shift);
 
     // turbo / MGU-H whine
     this.turbo = ctx.createOscillator();
@@ -342,29 +388,17 @@ export class Sound {
     const drag = this.gain(0.7);
     this.loop('brown').connect(this.filter('lowpass', 240, 0.7)).connect(drag).connect(sand.gain);
 
-    // tyre squeal: two near-unison tones, wobbling, with a bit of scrub noise
+    // tyre scrub: two high bands of noise, chattering. Noise on purpose: any oscillator
+    // here sounds like a musical note rather than rubber.
     this.squeal = this.gain(0);
     this.squealPan = ctx.createStereoPanner();
     this.squeal.connect(this.squealPan).connect(this.carBus);
-    this.squealPitch = ctx.createConstantSource();
-    this.squealPitch.offset.value = 880;
-    this.squealPitch.start();
-    const wobble = this.gain(70);
-    this.loop('wander', 1.6).connect(wobble);
-    const body = this.filter('bandpass', 1500, 1.2);
-    for (const ratio of [1, 1.37]) {
-      const o = ctx.createOscillator();
-      o.type = 'triangle';
-      o.frequency.value = 0;
-      const scale = this.gain(ratio);
-      this.squealPitch.connect(scale).connect(o.frequency);
-      wobble.connect(o.frequency);
-      o.connect(body);
-      o.start();
-    }
-    body.connect(this.squeal);
-    const scrub = this.gain(0.35);
-    this.loop('white').connect(this.filter('bandpass', 2600, 1)).connect(scrub).connect(this.squeal);
+    const chatter = this.gain(0.55);
+    const chatterDepth = this.gain(0.9);
+    this.loop('wander', 30).connect(chatterDepth).connect(chatter.gain);
+    this.squealBands = [this.filter('bandpass', 3400, 3), this.filter('bandpass', 5200, 3.5)];
+    for (const band of this.squealBands) this.loop('white').connect(band).connect(chatter);
+    chatter.connect(this.squeal);
   }
 
   buildWind() {
@@ -475,17 +509,28 @@ export class Sound {
   updateEngine(car, doppler, racing) {
     // reversing: the gearbox model holds rpm at idle, so rev up with the speed instead
     const reverse = car.gear === 'R';
-    const norm = clamp(reverse ? 0.45 + Math.abs(car.speed) * 0.03 : car.rpm, 0.18, 1);
+    let norm = clamp(reverse ? 0.45 + Math.abs(car.speed) * 0.03 : car.rpm, 0.18, 1);
+    // the gearbox model drops further per shift than a real one: in the recordings each
+    // upshift falls about 15%, so narrow the rev range once the car is under way
+    if (car.gear >= 2) norm = 1 - (1 - norm) * 0.6;
     const throttle = car.throttle;
     const load = throttle ** 0.8;
     this.glide(this.cycle.offset, ((norm * REDLINE) / 120) * doppler, 0.018);
 
     const r = clamp((norm - 0.4) / 0.6); // 0 at idle, 1 at the redline
-    this.glide(this.engineOn.gain, load * 0.95, 0.03);
-    this.glide(this.engineOff.gain, 0.6 - load * 0.35, 0.03);
-    this.glide(this.rasp.gain, 0.05 + load * 0.3 * (0.4 + 0.6 * r), 0.03);
-    this.glide(this.engineTone.frequency, 900 + (1000 + load * 7500) * (0.35 + 0.65 * r), 0.03);
-    this.glide(this.engineGain.gain, (0.13 + load * 0.3) * (0.72 + 0.28 * r), 0.03);
+    for (const bank of this.banks) {
+      this.glide(bank.on.gain, load, 0.03);
+      this.glide(bank.off.gain, 1 - load, 0.03);
+    }
+    const level = (0.09 + load * 0.3) * (0.72 + 0.28 * r);
+    this.glide(this.engineTone.frequency, 2400 + load * 14000, 0.03);
+    this.glide(this.engineGain.gain, level * HARMONIC_LEVEL, 0.03);
+    this.glide(this.noiseGain.gain, level * NOISE_LEVEL, 0.03);
+    // the wander is 0..1, so these set its full swing: cycle Hz, and a fraction of the level
+    this.glide(this.pitchJitter.gain, ((norm * REDLINE) / 120) * (0.018 - 0.012 * r), 0.05);
+    this.glide(this.timingJitter.gain, ((norm * REDLINE) / 120) * TIMING_JITTER, 0.05);
+    this.glide(this.roughDepth.gain, 0.34 - 0.24 * r, 0.05);
+    this.glide(this.rough.gain, 0.83 + 0.12 * r, 0.05);
 
     this.boost += (load * r - this.boost) * 0.04;
     this.glide(this.turbo.frequency, 2600 + this.boost * 3800, 0.05);
@@ -499,8 +544,8 @@ export class Sound {
       if (car.gear > this.gear) {
         // upshift: the ignition cut
         if (throttle > 0.3) {
-          g.setTargetAtTime(0.28, t, 0.006);
-          g.setTargetAtTime(1, t + 0.05, 0.018);
+          g.setTargetAtTime(0.6, t, 0.01);
+          g.setTargetAtTime(1, t + 0.07, 0.03);
         }
       } else {
         // downshift: a blip of throttle
@@ -522,6 +567,7 @@ export class Sound {
     const amount = { road: 0, kerb: 0, grass: 0, sand: 0 };
     const side = { road: 0, kerb: 0, grass: 0, sand: 0 };
     let ridgeSpacing = 1.1, squeal = 0, squealSide = 0, squealSlip = 0;
+    const drift = clamp((Math.abs(car.slipAngle ?? 0) - 0.08) / 0.2); // the body sideways, from about 5 degrees
     for (const w of car.wheels) {
       const name = w.surface.name;
       const layer = name === 'grass' && this.sandy ? 'sand' : LAYER_OF[name];
@@ -533,20 +579,20 @@ export class Sound {
 
       const slip = Math.abs(w.omega * w.r - roll); // m/s between tread and ground (wheelspin, lock-up)
       const fast = clamp(Math.max(roll, Math.abs(w.omega * w.r)) / 12);
-      const over = clamp((w.slide - 0.95) / 0.5) * fast;
       if (layer === 'road' || layer === 'kerb') {
+        const over = Math.max(drift, clamp((Math.abs(w.kappa) - 0.2) / 0.4)) * fast; // sideways, wheelspin or lock-up
         squeal += over * 0.25;
         squealSide += over * 0.25 * left;
         squealSlip = Math.max(squealSlip, slip);
-      } else amount[layer] += over * 0.2; // loose ground: sliding just digs in louder
+      } else amount[layer] += clamp((w.slide - 0.95) / 0.5) * fast * 0.2; // loose ground: sliding just digs in louder
     }
 
     const v = Math.abs(car.speed);
     const speed = clamp(v / 80);
     const moving = clamp(v / 4); // nothing rolling, nothing to hear
     const levels = {
-      road: 0.2 * speed ** 0.8,
-      kerb: 0.7 * clamp(v / 30) ** 0.7,
+      road: 0.5 * speed ** 0.8,
+      kerb: 0.24 * clamp(v / 30) ** 0.7,
       grass: 0.6 * clamp(v / 45) ** 0.6,
       sand: 0.6 * clamp(v / 40) ** 0.6,
     };
@@ -554,7 +600,7 @@ export class Sound {
       const L = this.layers[name];
       this.glide(L.gain.gain, amount[name] * levels[name] * moving, 0.035);
       // left wheels are heard on the left (pan -1)
-      this.glide(L.pan.pan, amount[name] ? clamp(-side[name] / amount[name]) * 0.6 : 0, 0.05);
+      this.glide(L.pan.pan, amount[name] ? clampPan(-side[name] / amount[name]) * 0.6 : 0, 0.05);
     }
     const { road, kerb, grass, sand } = this.layers;
     this.glide(road.low.frequency, 110 + v * 3.4, 0.08);
@@ -563,9 +609,11 @@ export class Sound {
     grass.swish.playbackRate.value = 0.35 + v / 18;
     sand.grains.playbackRate.value = 0.5 + v / 28;
 
-    this.glide(this.squeal.gain, squeal ** 0.7 * 0.3, squeal > 0 ? 0.03 : 0.07);
-    this.glide(this.squealPan.pan, squeal ? clamp(-squealSide / squeal) * 0.5 : 0, 0.05);
-    this.glide(this.squealPitch.offset, 760 + clamp(squealSlip / 30) * 420, 0.06);
+    this.glide(this.squeal.gain, squeal ** 0.7 * 0.5, squeal > 0 ? 0.03 : 0.07);
+    this.glide(this.squealPan.pan, squeal ? clampPan(-squealSide / squeal) * 0.5 : 0, 0.05);
+    const scrub = clamp(squealSlip / 30);
+    this.glide(this.squealBands[0].frequency, 3000 + scrub * 900, 0.06);
+    this.glide(this.squealBands[1].frequency, 4600 + scrub * 1400, 0.06);
   }
 
   updateWind(air) {
@@ -608,9 +656,9 @@ export class Sound {
     this.lastHit = t;
     this.lastHitStrength = speed;
     const s = clamp(speed / 28);
-    const level = 0.35 + s ** 0.6 * 0.75;
+    const level = 0.06 + s ** 0.8 * 1.04;
     const out = ctx.createStereoPanner();
-    out.pan.value = clamp(-side) * 0.55;
+    out.pan.value = clampPan(-side) * 0.55;
     out.connect(this.carBus);
 
     const thump = ctx.createOscillator();

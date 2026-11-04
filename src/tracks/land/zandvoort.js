@@ -113,6 +113,14 @@ export default {
     ],
     sausages: [],
   },
+  stands: [
+    [0, 'L', -43, 33, 16], // main grandstand opposite the pits (the big white roof on the imagery)
+    // the rest are off-season imagery: bare terraces/pads, no seats visible, so these are inferred
+    [3380, 'R', 0, 80, 12], // grey terrace slope beyond the barrier before T13
+    [3605, 'R', 0, 60, 10], // stepped concrete terrace on the inside at T13's exit
+    [3640, 'L', 0, 30, 12], // small grey pad outside, 30 m back from the barrier
+    [3755, 'L', 0, 60, 8], // flat-roofed building with terraces on the dune outside Arie Luyendykbocht
+  ],
   bridges: [
     [100, 'foot'], // footbridge over the main straight (pit straight, ~100 m after the line)
     [1915, 'foot'], // footbridge after Scheivlak

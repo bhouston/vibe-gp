@@ -28,15 +28,16 @@ export default {
       [760, 'R', 0, 120, 15],
       // S curves
       [880, 'L', 0, 100, 40],
-      [880, 'R', 0, 40, 15],
+      [880, 'R', 0, 100, 15],
       [980, 'L', 0, 120, 35],
+      [980, 'R', 0, 120, 30],
       [1100, 'L', 0, 150, 18],
+      [1100, 'R', 0, 150, 25],
       [1250, 'L', 0, 170, 22],
+      [1250, 'R', 0, 170, 17],
       // Gyaku exit up to NIPPO (Dunlop)
       [1420, 'L', 0, 140, 25],
-      // R kept constant through the S-curve/Gyaku gravel (real: ~15-30 m) so the barrier has no
-      // width steps inside the trap (see note on the engine's pit-wall flag)
-      [920, 'R', 0, 640, 22],
+      [1420, 'R', 0, 140, 12],
       [1560, 'L', 0, 220, 10],
       [1560, 'R', 0, 220, 32],
       [1780, 'L', 0, 120, 10],
@@ -54,9 +55,9 @@ export default {
       [2550, 'L', 0, 150, 12],
       // hairpin (left-hander)
       [2700, 'L', 0, 100, 8],
-      [2650, 'R', 0, 200, 25],
+      [2700, 'R', 0, 100, 25],
       [2800, 'L', 0, 300, 8],
-      [2850, 'R', 0, 250, 14],
+      [2800, 'R', 0, 300, 14],
       // run to Spoon
       [3100, 'L', 0, 300, 10],
       [3100, 'R', 0, 300, 10],
@@ -101,16 +102,30 @@ export default {
       [1260, 'L', 0, 300, 2], // Gyaku outside and on up the left
       [1560, 'R', 0, 360, 2], // NIPPO (Dunlop) outside and the run to Degner
       [2090, 'L', 0, 240, 2], // Degner 1 + 2
-      [2680, 'R', 0, 150, 2], // hairpin
+      [2690, 'R', 0, 110, 2], // hairpin
       [3580, 'R', 0, 380, 14], // Spoon: gravel beyond the asphalt
       [3960, 'R', 0, 100, 2], // Spoon exit
-      [4800, 'R', 0, 200, 15], // 130R
-      [5000, 'R', 0, 150, 10],
+      [4800, 'R', 0, 215, 15], // 130R (overlaps the next so the ends don't taper mid-trap)
+      [4985, 'R', 0, 165, 10],
       [5180, 'L', 0, 300, 2], // chicane + last curve outside
       [5270, 'R', 0, 180, 2],
     ],
     sausages: [],
   },
+  stands: [
+    [5625, 'L', 0, 172, 16], [0, 'L', 0, 128, 16], // main grandstand, opposite the pits
+    [200, 'L', 0, 100], // green seats on the bank after the main stand
+    [610, 'L', 0, 80], // outside First Turn
+    [690, 'L', 0, 300], // long green-seat stand behind Second Turn and the run to the S curves
+    [1095, 'L', 0, 250], // S curves
+    [1390, 'L', 0, 50], // Gyaku
+    [1470, 'L', 0, 245], // inside NIPPO (Dunlop)
+    [2400, 'R', 0, 115], // after the crossover, on the way to the hairpin
+    [2800, 'R', 0, 60], // hairpin exit
+    [4810, 'L', 0, 100], // inside 130R
+    [5210, 'L', 0, 280], // chicane and last curve
+    [5500, 'L', 0, 65], // start of the pit straight
+  ],
   bridges: [
     [170, 'foot'], // walkway bridge over the pit straight
     [3198, 'foot'], [4350, 'foot'], // one footbridge spanning both the Spoon approach and the back straight

@@ -22,6 +22,13 @@ export default {
       [420, 'R', 0, 110, 15],
       // left-hand bend toward the car park: violet "camel" painted area on the right
       [880, 'R', 0, 120, 25],
+      // cream painted run-off on the right, out to the red/white barrier along the car park
+      [1200, 'R', 0, 30, 18],
+      [1230, 'R', 0, 30, 30],
+      [1260, 'R', 0, 50, 40], // the barrier's sharp corner
+      [1310, 'R', 0, 40, 32],
+      [1350, 'R', 0, 40, 18],
+      [1390, 'R', 0, 50, 8],
       // esses: wide violet/pink painted area on the left, violet chequered strip on the right
       [1380, 'L', 0, 260, 30],
       [1580, 'R', 0, 140, 20],
@@ -47,18 +54,20 @@ export default {
       // decorated painted patches, each in its own colours
       [340, 'R', 0, 80, { paint: [0x1c1c1c, 0xe8e8e8] }], // black/white chequers outside T1
       [420, 'L', 0, 110, { paint: [0xe0508f, 0xf0e4ec] }], // pink/white strip between the carriageways
-      [420, 'R', 0, 110, { paint: [0x1f4a55, 0xd8487e] }], // dark teal F1-car plaza with pink graphics
-      [880, 'R', 0, 120, { paint: [0x6a55b0, 0x3048a0] }], // violet/blue "camel" area
-      [1380, 'L', 0, 260, { paint: [0x7a5cb5, 0xe2609a] }], // violet + hot pink esses area
-      [1580, 'R', 0, 140, { paint: [0x7a5cb5, 0xd8d8e8] }], // violet with white chequered flags
-      [2240, 'R', 0, 190, { paint: [0x3550b0, 0x8a5ab8] }], // blue/violet waves, north hairpin
-      [2560, 'R', 0, 270, { paint: [0x5fb8d8, 0x2a4f9a] }], // light blue with dark-blue diamonds
-      [2960, 'L', 0, 160, { paint: [0xe2609a, 0xf0c040] }], // pink/yellow sunburst
+      [420, 'R', 0, 110, { paint: [0x1f4a55, 0x1f4a55], pattern: 'solid' }], // dark teal F1-car plaza
+      [880, 'R', 0, 120, { paint: [0x6a55b0, 0x6a55b0], pattern: 'solid' }], // violet "camel" area
+      [1200, 'R', 0, 240, { bands: [[24, 0xefe2b6], [4.5, 0x1f5a44], [20, 0xefe2b6]] }], // flat cream, dark green stripe near the barrier
+      [1380, 'L', 0, 100, { paint: [0x7a5cb5, 0x7a5cb5], pattern: 'solid' }], // violet
+      [1480, 'L', 0, 160, { bands: [[3, 0xf6ead0], [30, 0xe8689a]] }], // hot pink, cream by the kerb
+      [1580, 'R', 0, 140, { paint: [0x7a5cb5, 0x7a5cb5], pattern: 'solid' }], // violet with white chequered flags
+      [2240, 'R', 0, 190, { paint: [0x3550b0, 0x8a5ab8], pattern: 'along' }], // blue/violet waves, north hairpin
+      [2560, 'R', 0, 270, { paint: [0x5fb8d8, 0x5fb8d8], pattern: 'solid' }], // light blue with dark-blue diamonds
+      [2960, 'L', 0, 160, { bands: [[14, 0xe8689a], [6, 0x2a3a90], [12, 0xf0b030]] }], // pink, navy zigzag, yellow sunburst
       [4130, 'L', 0, 100, { paint: [0xe0508f, 0xf0e4ec] }], // pink/white strip
       [4180, 'R', 0, 140, { paint: [0x2550b0, 0x2550b0] }], // plain royal blue with a white sponsor logo
       [4690, 'L', 0, 180, 'asphalt'], // dark apron by the lagoon
-      [5380, 'L', 0, 180, { paint: [0x4f8fd0, 0x2a4f9a] }], // painted circle inside the south hairpin
-      [5380, 'R', 0, 180, { paint: [0x2a4f9a, 0xe8e8e8] }], // blue/white chequers outside it
+      [5380, 'L', 0, 180, { paint: [0x4f8fd0, 0x2a4f9a], pattern: 'along' }], // painted circle inside the south hairpin
+      [5380, 'R', 0, 180, { bands: [[18, 0x1f4a55], [10, 0xdfe4ee]] }], // dark teal, pale chequered edge
       [5880, 'L', 0, 110, { paint: [0xd8406a, 0xe8e8e8] }], // red/white painted pit-entry island
     ],
     traps: [],
@@ -71,20 +80,33 @@ export default {
     [1900, 'foot'], [2760, 'foot'], // footbridge over both legs south of the hairpin
     [5790, 'foot'], [5895, 'foot'], // footbridges on the run up to the main straight
   ],
-  kerb: { colors: [0xd0201c, 0xf2f2f2] }, // red/white, confirmed on the imagery
+  stands: [
+    // long white-roofed main stand opposite the pits
+    [6075, 'R', 0, 270, 16],
+    [190, 'R', 0, 125, 16], // open tiered stand, nine blocks, on to T1
+    [1190, 'L', 0, 75, 12], // white-roofed block between the legs (probably a stand)
+    [3390, 'L', 0, 80, 12], // its twin, facing the seafront leg
+  ],
+  kerb: { colors: [0xd0201c, 0xf2f2f2] }, // red/white seen at 3600-3700; elsewhere the photo shows white/dark dashes (one colour pair only)
   ground: 'paved',
-  scenery: { trees: 0, paved: true, illuminated: true, city: true, tall: 1.4, sea: 'west' },
+  scenery: { trees: 0, paved: true, illuminated: true, city: true, tall: 1.4, sea: 'west', paint: [0x4a4c50, 0x4a4c50] }, // paint: plain grey verge behind the walls
   areas: [
-    // sandy vacant lot beside the track at about 1150-1350, east of the wall (in front of the car park)
-    { kind: 'sand', pts: [[-312.4, 1188.2], [-229.2, 1138.3], [-228.1, 1073.4], [-246.9, 1054.0], [-256.9, 1092.8], [-281.9, 1162.2]] },
-    // the spit 4550-5300: OSM floods the sea right up to the west wall, but there are a road and a
-    // promenade (30-55 m) between the track and the sea wall
+    // the spit 4550-5300: the road and promenade between the track and the sea wall. OSM's coastline
+    // is already within ~10 m of the photo here; this mainly gives the strip a concrete look
     { kind: 'concrete', pts: [[-283, -55], [-281.7, -82.6], [-287.2, -115.9], [-281.7, -149.2], [-267.8, -204.7], [-253.9, -254.6],
       [-244.9, -300.4], [-231.0, -355.8], [-208.8, -411.3], [-172.8, -466.7], [-139.5, -511.1], [-122.9, -544.4], [-118.6, -583.1],
       [-76.1, -561.1], [-90.2, -546.3], [-102.3, -532.7], [-113.7, -517.7], [-125.7, -501.8], [-137.4, -485.3], [-148.4, -468.1],
       [-163.2, -444.2], [-173.1, -426.5], [-182.1, -408], [-191.2, -387.8], [-201.5, -361.2], [-211.6, -332.7], [-218.8, -309.6],
       [-225.3, -286.1], [-230, -264.2], [-234.4, -242.5], [-240.3, -219.8], [-245.4, -198.3], [-248.7, -177.9], [-250.7, -157.5],
       [-251.4, -132.9], [-250.2, -110.2], [-247.3, -87.8], [-243.9, -69.6], [-239.4, -51.6]] },
+    // the concrete promenade along the lagoon side, 4565-5300, which OSM leaves as water
+    { kind: 'concrete', pts: [[-196.8, 10], [-211.4, -20.9], [-223.2, -53.5], [-230.9, -86.6], [-234.7, -120.5], [-234.7, -154.9],
+      [-230.7, -188.7], [-223.2, -222.2], [-215.2, -256.6], [-207.5, -290.3], [-197.7, -323.6], [-186.3, -356.2], [-173.4, -388.3],
+      [-158.8, -419.4], [-141.2, -449.4], [-122.6, -478.5], [-102.1, -506.6], [-80.4, -533.3], [-56.2, -557.7], [-30.5, -581.1],
+      [-3.7, -602.5], [24.7, -622.7], [32, -612], [3.9, -591.9], [-21.9, -571.4], [-47.3, -548.3], [-70.7, -524.7], [-91.7, -498.7],
+      [-112.1, -471], [-130.1, -442.5], [-147.4, -413.1], [-161.6, -383], [-174.2, -351.5], [-185.3, -319.7], [-191.1, -285.8],
+      [-190.7, -251.6], [-199, -215.9], [-206.1, -184.7], [-209.8, -154.1], [-209.8, -121.9], [-212.2, -90.1], [-205.2, -59.5],
+      [-193.8, -27.9], [-179.9, 1.2]] },
   ],
   notes: `Jeddah Corniche Circuit: a walled street circuit on the Red Sea corniche, raced at night under floodlights.
 Run-off: walls 2-4 m from the track edge almost everywhere. There is no gravel and no grass. The run-off is
@@ -98,7 +120,9 @@ Surroundings, going round the lap:
 - 300-550 T1-T3: a compact complex with painted plazas, under a footbridge/grandstand bridge at ~560.
 - 550-1000: northbound beside the Corniche road (east). On the west are a planted median and a paved plaza
   with a triangle pattern, then the southbound return leg (3600-4000).
-- 1000-1400: a large tarmac car park east of the track, with a beige sand lot at 1150-1350.
+- 1000-1400: a large tarmac car park east of the track. At 1200-1440 flat cream painted run-off, with a
+  dark green stripe, runs up to 32 m out to a red/white barrier along the car park. It is paint, not a sand
+  lot: there is no wall between it and the track. The red/white rows round the painted patches are barriers.
   Footbridge over both legs at ~1180/3500.
 - 1400-2000: the esses, with car parks and a tall tower to the east and a park with a tennis court between
   the legs. Footbridge at ~1900/2780.
@@ -117,8 +141,9 @@ Surroundings, going round the lap:
   south-west. The hairpin goes round a painted circle.
 - 5550-5900: northbound, with lagoon islands, a car park and a footbridge (~5780) on the left and tower
   blocks across the Corniche road on the right.
-OSM provides the sea and lagoon. Along the spit, OSM's sea came too close to the west wall, so a concrete
-area restores the road and promenade there. Each painted patch has its own colour pair, but the real ones
-are pictures (an F1 car, camels, a sunburst, logos) that diagonal bands only suggest. Barriers are concrete walls with debris fencing,
-with TecPro blocks at the corner ends.`,
+OSM provides the sea and lagoon. Concrete areas mark the road and promenade west of the spit and the promenade
+on its lagoon side. Each painted patch has its own colour pair, but the real ones
+are pictures (an F1 car, camels, a sunburst, logos) that diagonal bands only suggest. Barriers show as thin lines, and as red/white rows
+round the painted patches. The white-roofed blocks at 1190-1265 and 3390-3470 are read as stands from their
+look alone. The long white roof at 6075-165 is the main stand; the game currently leaves it out.`,
 };

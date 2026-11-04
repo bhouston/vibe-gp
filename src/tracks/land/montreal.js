@@ -115,10 +115,6 @@ export default {
     [4063, 'foot'], // to the paddock, just after the final chicane
   ],
   areas: [
-    // Ile Sainte-Helene (Parc Jean-Drapeau, Biosphere), across the ~150-250 m Chenal Le Moyne west of the
-    // run north to the hairpin: OSM's St Lawrence multipolygon comes in as its outer ring only and floods
-    // the whole island. East shore traced from the overview aerial (+-20 m); wooded park.
-    { kind: 'forest', pts: [[-560, 2500], [-570, 2050], [-580, 1817], [-622, 1425], [-713, 1150], [-747, 933], [-797, 750], [-813, 650], [-1500, 650], [-1500, 2500]] },
     // Paddock and pit-building apron on the rowing basin's west bank: OSM's basin outline runs a straight
     // line from (59,-9) to (-9,308) and floods the paddock; the real bank bulges ~25-30 m further east
     // (plus a paved pier at y -55..34).

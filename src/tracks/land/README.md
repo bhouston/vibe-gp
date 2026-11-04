@@ -55,7 +55,9 @@ width (m) of a painted strip past the kerb, with plain asphalt beyond it:
 `{ paint: [0x2a9d4a, 0x2a9d4a], strip: 4, beyond: 'grass', pattern: 'along' }`: its own paint colours,
 the pattern (`'diagonal'` 3 m bands at 45 degrees, the default; `'along'` 1.5 m bands
 parallel to the track, like rainbow run-off; `'solid'` the first colour only; set the
-default for `surfaces.paint` with `surfaces.paintPattern`)
+default for `surfaces.paint` with `surfaces.paintPattern`). For several colours use
+`{ bands: [[5, 0xf6efc0], [9, 0xf0d860], [20, 0xc8302a]] }`: [metres, colour] outward from
+the kerb, the last one running on to the barrier
 (instead of `surfaces.paint`), an optional painted strip width, and what lies beyond the
 strip (`'asphalt'`, the default, or `'grass'`). Anywhere without a `paved` or `traps` entry
 the run-off is the circuit's ground (grass on most circuits). Paved run-off drives like

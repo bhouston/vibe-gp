@@ -6,6 +6,9 @@
 const GREEN = 0x1f9a72, GREEN_2 = 0x2aa67c; // Spa's teal-green painted run-off
 const YELLOW = 0xe8c23a;
 const STRIP = { paint: [0xc8302a, YELLOW], strip: 4, beyond: 'grass' }; // red/yellow edge strip
+// Raidillon and Bus Stop: broad bands outward from the kerb, as on the photo
+const BANDS = { bands: [[6, 0xf3ecc4], [9, 0xeed56a], [7, 0xe58f86], [99, 0xb5382e]] };
+const GREEN_LENS = { bands: [[5, 0x3d3f43], [15, 0x1f9a72], [99, 0x3d3f43]] }; // green, dark asphalt round it
 const ASPHALT_THEN_GRASS = { paint: [0x3d3f43, 0x3d3f43], strip: 10, beyond: 'grass' };
 
 export default {
@@ -112,15 +115,15 @@ export default {
       [180, 'R', 0, 60, 'asphalt'],
       [390, 'L', 0, 260, ASPHALT_THEN_GRASS], // old wide straight: ~10 m tarmac, then grass
       [760, 'L', 0, 70, 'asphalt'],
-      [880, 'L', 0, 170, 'paint'],
-      [1050, 'L', 0, 250, { paint: [GREEN, GREEN_2] }], // green paint up to the Raidillon grandstand
-      [195, 'R', 0, 30, { paint: [GREEN, GREEN_2] }], // green patch at the La Source apex
+      [880, 'L', 0, 170, BANDS],
+      [1050, 'L', 0, 250, GREEN_LENS], // green paint up to the Raidillon grandstand
+      [195, 'R', 0, 30, { paint: [GREEN, GREEN_2], pattern: 'solid' }], // green patch at the La Source apex
       [2080, 'L', 0, 130, STRIP], // red/yellow painted strip, grass behind
       [2550, 'R', 0, 110, STRIP],
       [4150, 'L', 0, 70, STRIP],
       [4600, 'L', 0, 110, STRIP],
       [4640, 'R', 0, 70, STRIP],
-      [1050, 'R', 0, 270, 'paint'],
+      [1050, 'R', 0, 270, BANDS],
       [2220, 'L', 0, 40, 'asphalt'],
       [2260, 'L', 0, 70, 'asphalt'],
       [2780, 'L', 0, 180, 'asphalt'],
@@ -130,10 +133,10 @@ export default {
       [3620, 'R', 0, 580, 'asphalt'],
       [5130, 'L', 0, 400, 'asphalt'],
       [5660, 'R', 0, 570, 'asphalt'],
-      [6440, 'L', 0, 180, 'paint'],
-      [6440, 'R', 0, 120, { paint: [GREEN, GREEN_2], strip: 5, beyond: 'grass' }],
-      [6560, 'R', 0, 60, { paint: [GREEN, GREEN_2] }], // green triangle at the first apex
-      [6620, 'R', 0, 150, 'paint'],
+      [6440, 'L', 0, 180, BANDS],
+      [6440, 'R', 0, 120, { paint: [GREEN, GREEN_2], strip: 5, beyond: 'grass', pattern: 'solid' }],
+      [6560, 'R', 0, 60, { paint: [GREEN, GREEN_2], pattern: 'solid' }], // green triangle at the first apex
+      [6620, 'R', 0, 150, BANDS],
       [6620, 'L', 0, 160, 'asphalt'],
     ],
     traps: [
@@ -153,6 +156,17 @@ export default {
     ],
     sausages: [],
   },
+  // grandstands seen on the imagery, in lap metres
+  stands: [
+    [230, 'L', 0, 100, 12], // blue-seat stands behind the La Source gravel
+    [490, 'L', 0, 140, 16], // big grey-roofed stand above the run to Eau Rouge
+    [650, 'L', 0, 90, 12], // blue seats
+    [770, 'L', 0, 110, 12], // blue seats
+    [920, 'L', 0, 80, 12], // blue seats, outside Raidillon
+    [1000, 'L', 0, 180, 16], // the covered Raidillon grandstand
+    [3100, 'L', 0, 140, 12], // blue seats after Speaker's Corner
+    [6780, 'L', 0, 120, 16], // red-roofed main stand opposite the pits
+  ],
   bridges: [
     [3390, 'gantry'],
     [4180, 'gantry'],
@@ -172,8 +186,8 @@ export default {
 most corners; tyre/TecPro walls round the traps are covered in red/yellow (the Wallonia colours).
 
 Surfaces the format only approximates:
-- Raidillon and Bus Stop red/yellow paint is in long bands running ALONG the track (red,
-  pink, yellow, cream, like a rainbow), not diagonal stripes. Green (teal) paint: inside of
+- Raidillon and Bus Stop paint is in long bands along the track in four tones (red, pink,
+  yellow, cream); only red and yellow are used here (pattern 'along'). Green (teal) paint: inside of
   Raidillon 1050-1300 L, Bus Stop 6440-6620 R, La Source apex - set as paint objects.
 - Many traps are asphalt-then-gravel (Bruxelles, Pouhon, run to Blanchimont, Blanchimont):
   a 8-20 m dark asphalt band next to the kerb, then gravel to the wall.
@@ -192,7 +206,7 @@ Surroundings (beyond the barriers):
   park and a farm-field patchwork south of Malmedy and along 2550-2800 L.
 - Bruxelles: forest inside the hairpin (the old track loop forms a grey ring road round it);
   car park and farmland (yellow-green fields) to the south-west.
-- Speaker's Corner to Pouhon: blue-seat grandstand at 3150-3300 L; forest both sides; open
+- Speaker's Corner to Pouhon: blue-seat grandstand at 3100-3240 L; forest both sides; open
   grass/scrub field inside Pouhon and a gravel car park/spectator area outside it.
 - Fagnes/Campus: forest; a large gravel spectator/car park area inside (north) of Fagnes.
 - Stavelot / Paul Frere: circuit buildings (medical/race control style flat-roofed blocks)
