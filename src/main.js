@@ -188,6 +188,7 @@ async function start() {
   const sound = new Sound();
   sound.setMusic(settings.get('music'));
   sound.setSfx(settings.get('sound'));
+  startLights.onStep = (green) => sound.startBeep(green);
   // a phone held upright: the #rotate overlay covers the game (style.css), which waits for it
   const upright = matchMedia('(pointer: coarse) and (orientation: portrait) and (max-width: 600px)');
   sound.setPaused(upright.matches);

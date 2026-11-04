@@ -651,6 +651,22 @@ export class Sound {
     this.burst('brown', { t, type: 'lowpass', frequency: 320, gain: 1.1 * strength, decay: 0.05 });
   }
 
+  /** A start light coming on: a short beep for each red, a long one an octave up for green. */
+  startBeep(green) {
+    const { ctx } = this;
+    if (!ctx) return; // no gesture yet (a ?track= link): the lights just run silently
+    const t = ctx.currentTime, length = green ? 0.7 : 0.16;
+    const osc = ctx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.value = green ? 1320 : 660;
+    const env = this.gain(0.14);
+    env.gain.setValueAtTime(0.14, t + length * 0.6);
+    env.gain.exponentialRampToValueAtTime(0.001, t + length);
+    osc.connect(env).connect(this.sfx);
+    osc.start(t);
+    osc.stop(t + length);
+  }
+
   /**
    * A hit on a barrier. speed: m/s into the wall; side: which side of the car it hit
    * (+ = left). Thump of the chassis, crunch of the bodywork, a ring from the barrier, and

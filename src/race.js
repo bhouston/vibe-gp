@@ -71,13 +71,20 @@ export class StartLights {
     return this.time < GREEN_AT;
   }
 
+  /** How far the sequence has got: the number of reds lit, then 6 once it is green. */
+  get step() {
+    return this.holding ? Math.floor(this.time / RED_STEP) : 6;
+  }
+
   update(dt) {
+    const before = this.step;
     this.time += dt;
     this.paint();
+    if (this.step !== before) this.onStep?.(!this.holding);
   }
 
   paint() {
-    const reds = this.holding ? Math.floor(this.time / RED_STEP) : 0;
+    const reds = this.holding ? this.step : 0;
     const green = !this.holding && this.time < GREEN_AT + GREEN_FOR;
     this.lamps.forEach((lamp, i) => {
       // the lamps run right to left from the driver's seat: fill from the driver's left
