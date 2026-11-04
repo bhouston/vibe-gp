@@ -118,6 +118,7 @@ async function start() {
     scene.add(track.group);
     physics = new CarPhysics(track.path, track.path.gridPose(0));
     rig.tvCams = track.tvCams;
+    rig.track = track.path;
     rig.initialised = false;
     timer.reset();
     timer.best = loadBest(def.id);
@@ -169,9 +170,10 @@ async function start() {
       const s = track.path.poseAt(0);
       const p = physics.position;
       const cx = s.x + (p.x - s.x) * closeUp, cz = s.z + (p.z - s.z) * closeUp;
+      const cy = s.y + (physics.height - s.y) * closeUp;
       const r = 60 + (7 - 60) * closeUp, h = 22 + (2.2 - 22) * closeUp;
-      camera.position.set(cx + Math.cos(orbit) * r, h, cz + Math.sin(orbit) * r);
-      camera.lookAt(cx, 0.5 * closeUp, cz);
+      camera.position.set(cx + Math.cos(orbit) * r, cy + h, cz + Math.sin(orbit) * r);
+      camera.lookAt(cx, cy + 0.5 * closeUp, cz);
       car.update(physics, 0);
     } else {
       if (input.hit('Escape')) menu.show(track.def.id);
@@ -197,8 +199,9 @@ async function start() {
 
     // keep the shadow frustum centred on the car
     const p = physics.position;
-    sun.position.set(p.x + SUN_DIR[0] * 100, SUN_DIR[1] * 100, p.z + SUN_DIR[2] * 100);
-    sun.target.position.set(p.x, 0, p.z);
+    const py = physics.height;
+    sun.position.set(p.x + SUN_DIR[0] * 100, py + SUN_DIR[1] * 100, p.z + SUN_DIR[2] * 100);
+    sun.target.position.set(p.x, py, p.z);
 
     hud.update(physics, timer, rig.mode);
     if (import.meta.env.DEV) {
@@ -269,7 +272,7 @@ class Menu {
           <circle cx="${start.x}" cy="${start.z}" r="${sw * 1.1}" fill="#e10600"/>
         </svg>
         <div class="track-name">${def.name}</div>
-        <div class="track-meta">${def.country} · ${(path.length / 1000).toFixed(3)} km</div>
+        <div class="track-meta">${def.country} · ${(path.length / 1000).toFixed(3)} km${path.elevationRange >= 1 ? ` · ${path.elevationRange.toFixed(0)} m elevation change` : ''}</div>
         <div class="track-best">Best <span>${formatTime(loadBest(def.id))}</span></div>`;
       card.addEventListener('click', () => this.onTrack(def));
       card.addEventListener('mouseenter', () => this.focus('track', i));

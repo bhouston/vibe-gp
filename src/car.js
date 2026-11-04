@@ -411,8 +411,9 @@ export class Car {
 
   /** Sync visuals with the physics state. */
   update(state, dt) {
-    this.group.position.set(state.position.x, 0, state.position.z);
-    this.group.rotation.y = state.yaw;
+    // ride the road: its height, and the slope along and across the car's heading
+    this.group.position.set(state.position.x, state.height ?? 0, state.position.z);
+    this.group.rotation.set(-Math.atan(state.gradeF ?? 0), state.yaw, Math.atan(state.gradeL ?? 0), 'YXZ');
     for (const w of this.wheels) {
       if (w.front) w.steer.rotation.y = state.steerAngle;
       w.spin.rotation.x += (state.speed / w.radius) * dt;

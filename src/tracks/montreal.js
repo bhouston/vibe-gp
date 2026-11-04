@@ -9,12 +9,19 @@
 // Reference: OpenStreetMap way 136717490 "Circuit Gilles-Villeneuve" (ODbL, (c) OpenStreetMap
 // contributors), projected to local metres (equirectangular at 45.505 N) with the origin on the start
 // line (OSM node 5775641515), resampled every ~10 m in corners and up to ~70 m on straights.
+import elevation from './elevation/montreal.js';
+
 export default {
   id: 'montreal',
   name: 'Circuit Gilles Villeneuve',
   country: 'Canada',
   realLength: 4361, // metres, official lap length
   width: 14,
+  // projection origin of the points (the start line; scale taken at 45.505 N), for scripts/fetch-elevation.mjs
+  geo: { lat: 45.500082, lon: -73.5227086, projLat: 45.505 },
+  elevation, // m above sea level around the lap (real terrain, see the generated file)
+  // red/white kerbs
+  kerb: { colors: [0xd0201c, 0xf2f2f2] },
   corners: [
     { name: 'Senna S (T1)', at: 7 },
     { name: 'Senna S (T2)', at: 17 },

@@ -25,11 +25,11 @@ export function asphaltMaterial() {
   return m;
 }
 
-/** Red/white kerbs: stripes along the ring. */
-export function kerbMaterial(stripes) {
+/** Kerbs: alternating stripes of two colours (red/white by default) along uv.x. */
+export function kerbMaterial(stripes, [a, b] = [0xd81e1e, 0xf2f2f2]) {
   const m = new THREE.MeshStandardNodeMaterial();
   const s = step(0.5, fract(uv().x.mul(stripes)));
-  m.colorNode = mix(color(0xd81e1e), color(0xf2f2f2), s);
+  m.colorNode = mix(color(a), color(b), s);
   m.roughnessNode = float(0.55);
   return m;
 }

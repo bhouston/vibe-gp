@@ -32,6 +32,19 @@ console.log(`control points:   ${def.points.length}`);
 console.log(`lap length:       ${P.length.toFixed(0)} m` + (def.realLength ? `  (real ${def.realLength} m, ${(((P.length - def.realLength) / def.realLength) * 100).toFixed(1)}%)` : ''));
 console.log(`extent:           ${(b.maxX - b.minX).toFixed(0)} m E-W x ${(b.maxZ - b.minZ).toFixed(0)} m N-S`);
 console.log(`tightest radius:  ${tight.radius.toFixed(1)} m at s=${tight.s.toFixed(0)} m`);
+{
+  let gi = 0, ci = 0, cr = 0;
+  for (let i = 0; i < P.N; i++) {
+    if (Math.abs(P.grade[i]) > Math.abs(P.grade[gi])) gi = i;
+    if (P.vcurv[i] > P.vcurv[ci]) ci = i;
+    if (P.vcurv[i] < P.vcurv[cr]) cr = i;
+  }
+  console.log(`elevation:        ${P.elevationRange.toFixed(1)} m range, steepest ${(P.grade[gi] * 100).toFixed(1)}% at s=${(gi * P.ds).toFixed(0)}` +
+    (P.vcurv[ci] > 0 ? `, tightest dip R ${(1 / P.vcurv[ci]).toFixed(0)} m at s=${(ci * P.ds).toFixed(0)}` : '') +
+    (P.vcurv[cr] < 0 ? `, tightest crest R ${(-1 / P.vcurv[cr]).toFixed(0)} m at s=${(cr * P.ds).toFixed(0)}` : ''));
+  // a crest a car would fly off at 300 km/h
+  if (P.vcurv[cr] < 0 && (300 / 3.6) ** 2 * -P.vcurv[cr] > 9.81) problems.push(`crest at s=${(cr * P.ds).toFixed(0)} is tight enough (R ${(-1 / P.vcurv[cr]).toFixed(0)} m) to unload a car fully at 300 km/h`);
+}
 if (def.realLength && Math.abs(P.length - def.realLength) / def.realLength > 0.03) problems.push('lap length is more than 3% off the real length');
 if (tight.radius < 12) problems.push(`a corner is tighter than 12 m radius (s=${tight.s.toFixed(0)}) — likely a kink or a control point out of order`);
 

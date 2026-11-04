@@ -7,12 +7,19 @@
 // Reference: OpenStreetMap raceway ways for the circuit (data (c) OpenStreetMap
 // contributors, ODbL), chained into the GP loop, projected to local metres around
 // 52.073 N 1.016 W, lightly smoothed and resampled into control points (denser in corners).
+import elevation from './elevation/silverstone.js';
+
 export default {
   id: 'silverstone',
   name: 'Silverstone',
   country: 'United Kingdom',
   realLength: 5891, // metres, official lap length
   width: 14,
+  // projection origin of the points (equirectangular), for scripts/fetch-elevation.mjs
+  geo: { lat: 52.073, lon: -1.016 },
+  elevation, // m above sea level around the lap (real terrain, see the generated file)
+  // black/white kerbs: Silverstone repainted them from the 2016 British GP on
+  kerb: { colors: [0x1b1b1d, 0xf2f2f2] },
   points: [
     [-421, -405], [-378, -350], [-336, -294], [-293, -239], [-279, -221], [-267, -206], [-251, -193], [-232, -187],
     [-194, -185], [-129, -194], [-76, -201], [-30, -195], [8, -178], [52, -144], [107, -100], [138, -75],

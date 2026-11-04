@@ -6,6 +6,10 @@
 //           map coordinates with +x = east and +y = north. points[0] is the
 //           start/finish line and the order of points is the racing direction.
 //   width:  asphalt width in metres (default 14)
+//   elevation (optional): [h, ...] centreline heights in metres, evenly spaced around
+//           the lap from the start line. The road is level across its width; world
+//           heights are relative to the start line (py = 0 there).
+//   kerb (optional): { colors: [a, b] } the two kerb stripe colours (default red/white)
 //   pitlane (optional): { points: [[x, y], ...] } open polyline of the pit lane's
 //           centreline in the same map coordinates, in the driving direction, from
 //           the point where it leaves the track to the point where it rejoins.
@@ -41,6 +45,7 @@ export class TrackPath {
     this.hw = this.width / 2;
     this.runoff = def.runoff ?? DEFAULT_RUNOFF;
     this.sample();
+    this.sampleElevation();
     this.computeKerbs();
     this.pit = def.pitlane ? new PitPath(this, def.pitlane) : null;
     this.computeWalls();
@@ -88,6 +93,56 @@ export class TrackPath {
 
   wrap(i) {
     return ((i % this.N) + this.N) % this.N;
+  }
+
+  /**
+   * Heights along the lap: py (m, relative to the start line), grade (dh/ds) and
+   * vertical curvature vcurv (d²h/ds², 1/m; + = a dip that compresses the car).
+   */
+  sampleElevation() {
+    const N = this.N, e = this.def.elevation;
+    this.py = new Float64Array(N);
+    if (e?.length > 3) {
+      const n = e.length, at = (k) => e[((k % n) + n) % n] - e[0];
+      for (let i = 0; i < N; i++) {
+        const f = (i / N) * n, k = Math.floor(f), t = f - k;
+        // periodic Catmull-Rom through the stored heights
+        const p0 = at(k - 1), p1 = at(k), p2 = at(k + 1), p3 = at(k + 2);
+        this.py[i] = 0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t + (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t);
+      }
+    }
+    this.grade = new Float64Array(N);
+    const curv = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const a = this.py[this.wrap(i - 1)], b = this.py[i], c = this.py[this.wrap(i + 1)];
+      this.grade[i] = (c - a) / (2 * this.ds);
+      curv[i] = (a - 2 * b + c) / (this.ds * this.ds);
+    }
+    this.vcurv = boxFilter(curv, Math.max(1, Math.round(10 / this.ds)));
+    let lo = Infinity, hi = -Infinity;
+    for (const h of this.py) {
+      lo = Math.min(lo, h);
+      hi = Math.max(hi, h);
+    }
+    this.elevationRange = hi - lo;
+  }
+
+  /** Interpolated per-sample value at lap distance s (wrapped). */
+  lerpAt(arr, s) {
+    const f = (((s % this.length) + this.length) % this.length) / this.ds;
+    const i = Math.floor(f) % this.N;
+    const t = f - Math.floor(f);
+    return arr[i] + (arr[this.wrap(i + 1)] - arr[i]) * t;
+  }
+
+  heightAt(s) {
+    return this.lerpAt(this.py, s);
+  }
+  gradeAt(s) {
+    return this.lerpAt(this.grade, s);
+  }
+  vcurvAt(s) {
+    return this.lerpAt(this.vcurv, s);
   }
 
   /** Left normal at sample i (perpendicular to travel, pointing to the driver's left). */
@@ -251,7 +306,7 @@ export class TrackPath {
   }
 
   /**
-   * Barrier polylines: { pts: [[x, z], ...], closed, render, kind }.
+   * Barrier polylines: { pts: [[x, z, y], ...], closed, render, kind } (y = foot height).
    * kind: 'main' (track walls incl. the pit wall), 'pit' (lane's outer wall),
    * 'close' (short walls closing the run-off at the pit entry and exit).
    */
@@ -262,7 +317,7 @@ export class TrackPath {
     for (const side of [1, -1]) {
       const open = side > 0 ? this.openL : this.openR;
       const wall = side > 0 ? this.wallL : this.wallR;
-      const pt = (i) => [this.px[i] + this.leftX(i) * side * wall[i], this.pz[i] + this.leftZ(i) * side * wall[i]];
+      const pt = (i) => [this.px[i] + this.leftX(i) * side * wall[i], this.pz[i] + this.leftZ(i) * side * wall[i], this.py[i]];
       const keep = Array.from(open, (o) => !o);
       if (keep.every(Boolean)) {
         lines.push({ pts: Array.from({ length: N }, (_, i) => pt(i)), closed: true, render: true, kind: 'main', side });
@@ -279,7 +334,7 @@ export class TrackPath {
     if (pit) {
       // outer wall: along the lane's garage side, except where it would stand on the track
       const off = (j) => pit.outerHw(j) + PIT.wallClear + WALL_THICKNESS / 2;
-      const wpt = (j) => [pit.px[j] + pit.leftX(j) * pit.outer * off(j), pit.pz[j] + pit.leftZ(j) * pit.outer * off(j)];
+      const wpt = (j) => [pit.px[j] + pit.leftX(j) * pit.outer * off(j), pit.pz[j] + pit.leftZ(j) * pit.outer * off(j), pit.py[j]];
       const keep = [];
       for (let j = 0; j < pit.N; j++) {
         const [x, z] = wpt(j);
@@ -451,7 +506,8 @@ export class TrackPath {
     const t = f - Math.floor(f);
     const x = this.px[i] + (this.px[j] - this.px[i]) * t + this.leftX(i) * lateral;
     const z = this.pz[i] + (this.pz[j] - this.pz[i]) * t + this.leftZ(i) * lateral;
-    return { x, z, yaw: this.heading[i], i };
+    const y = this.py[i] + (this.py[j] - this.py[i]) * t;
+    return { x, z, y, yaw: this.heading[i], grade: this.grade[i], i };
   }
 
   /** Starting grid slot i (0 = pole), staggered left/right behind the line. */
@@ -565,6 +621,11 @@ export class PitPath {
       this.mainI[j] = main.wrap(Math.round((s % L) / main.ds));
       prev = s;
     }
+    // the lane is level with the bit of track beside it
+    this.py = new Float64Array(N);
+    for (let j = 0; j < N; j++) this.py[j] = main.heightAt(this.mainS[j]);
+    this.grade = new Float64Array(N);
+    for (let j = 0; j < N; j++) this.grade[j] = (this.py[Math.min(N - 1, j + 1)] - this.py[Math.max(0, j - 1)]) / (this.ds * (j > 0 && j < N - 1 ? 2 : 1));
     this.side = sideSum >= 0 ? 1 : -1; // +1: the lane is on the driver's left of the track
     this.outer = this.side; // the garages are on the side of the lane away from the track
     this.entryS = this.mainS[0] % L;
@@ -669,7 +730,8 @@ export class PitPath {
     const t = f - j;
     const x = this.px[j] + (this.px[j + 1] - this.px[j]) * t + this.leftX(j) * lateral;
     const z = this.pz[j] + (this.pz[j + 1] - this.pz[j]) * t + this.leftZ(j) * lateral;
-    return { x, z, yaw: this.heading[j], j };
+    const y = this.py[j] + (this.py[j + 1] - this.py[j]) * t;
+    return { x, z, y, yaw: this.heading[j], grade: this.grade[j], j };
   }
 
   svgPath(step = 3) {

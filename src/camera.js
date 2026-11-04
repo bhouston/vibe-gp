@@ -28,6 +28,7 @@ export class CameraRig {
   update(car, dt, visual) {
     const cam = this.camera;
     const { x, z } = car.position;
+    const y = car.height ?? 0; // road height under the car
     const yaw = car.yaw;
     const fx = Math.sin(yaw), fz = Math.cos(yaw);
     const speed = Math.abs(car.speed);
@@ -47,15 +48,22 @@ export class CameraRig {
         if (this.camYaw === undefined || !this.initialised) this.camYaw = wantYaw;
         this.camYaw += angleDiff(wantYaw, this.camYaw) * (1 - Math.exp(-(far ? 4 : 6) * dt));
         const dx = Math.sin(this.camYaw), dz = Math.cos(this.camYaw);
-        targetPos = new THREE.Vector3(x - dx * back, up, z - dz * back);
-        targetLook = new THREE.Vector3(x + fx * 4, 0.9, z + fz * 4);
+        // heights follow the road: never below the road behind the car (cresting a hill
+        // downwards), and the look point rides the slope ahead
+        const T = this.track;
+        const hBack = T ? T.heightAt(car.trackS - back) : y;
+        const hAhead = T ? T.heightAt(car.trackS + 4) : y;
+        targetPos = new THREE.Vector3(x - dx * back, Math.max(y, hBack) + up, z - dz * back);
+        targetLook = new THREE.Vector3(x + fx * 4, hAhead + 0.9, z + fz * 4);
         stiffness = 1000; // already smoothed via camYaw
         break;
       }
       case 'cockpit': {
         // T-cam: mounted on top of the airbox, looking over the halo
-        targetPos = new THREE.Vector3(x - fx * 0.3, 1.22, z - fz * 0.3);
-        targetLook = new THREE.Vector3(x + fx * 20, 0.6, z + fz * 20);
+        const chassis = visual.group; // follows the road's slope, not the body's pitch/roll
+        chassis.updateWorldMatrix(true, false);
+        targetPos = chassis.localToWorld(new THREE.Vector3(0, 1.22, -0.3));
+        targetLook = chassis.localToWorld(new THREE.Vector3(0, 0.6, 20));
         stiffness = 1000; // rigidly mounted
         break;
       }
@@ -77,8 +85,8 @@ export class CameraRig {
           if (d < bestD) { bestD = d; best = c; }
         }
         if (best !== this.tvCam) { this.tvCam = best; this.initialised = false; }
-        targetPos = best ? new THREE.Vector3(best.x, best.y, best.z) : new THREE.Vector3(x + 30, 10, z);
-        targetLook = new THREE.Vector3(x, 0.5, z);
+        targetPos = best ? new THREE.Vector3(best.x, best.y, best.z) : new THREE.Vector3(x + 30, y + 10, z);
+        targetLook = new THREE.Vector3(x, y + 0.5, z);
         stiffness = 1000;
         break;
       }

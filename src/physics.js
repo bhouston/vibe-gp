@@ -14,6 +14,10 @@
 //     wheelspin and lock-ups emerge on their own.
 //  4. Sum forces and the yaw moment on the chassis and integrate.
 // Tyre tread temperature and grass contamination are tracked per wheel.
+// Elevation: the car rides the track's height profile. Gravity pulls along the slope
+// (split into the car's forward and sideways directions), and vertical curvature adds
+// or removes load: a dip like Eau Rouge compresses the car (v²·κ extra), a crest
+// unloads it.
 import { CAR_DIMS } from './car.js';
 import { KERB_WIDTH, WALL_THICKNESS, PIT } from './trackPath.js';
 import { SURFACES, TYRE, tyreForce, tempGrip, peakForce } from './tyres.js';
@@ -125,6 +129,10 @@ export class CarPhysics {
     this.pitch = 0;
     this.roll = 0;
     this.heave = 0;
+    this.height = pose.y ?? 0; // world height of the road under the car
+    this.gradeF = 0; // slope along the car's heading (+ = uphill)
+    this.gradeL = 0; // slope to the car's left (+ = left side higher)
+    this.vcurv = 0; // vertical curvature under the car (1/m, + = dip)
     this.surface = 'asphalt';
     this.gear = 1;
     this.rpm = 0;
@@ -160,6 +168,7 @@ export class CarPhysics {
     // --- where the car is, and the surfaces under each wheel (once per step) ---
     this.locate();
     this.classifyWheels(this.trackIndex);
+    this.sampleSlope();
     this.prevPos.x = this.position.x;
     this.prevPos.z = this.position.z;
 
@@ -239,12 +248,15 @@ export class CarPhysics {
     const drag = qd * P.CdA * Math.sign(vx);
     this.downforce = downforce;
 
-    // vertical loads: static + aero + load transfer (from last step's accelerations)
+    // vertical loads: weight (less on a slope, more in a dip, less over a crest)
+    // + aero + load transfer (from last step's accelerations)
+    const g = this.gradeF * this.gradeF + this.gradeL * this.gradeL;
+    const gN = Math.max(0, G / Math.sqrt(1 + g) + (vx * vx + vy * vy) * this.vcurv);
     const ax = this.longAccel, ay = this.latAccel;
     const longT = (m * ax * P.cgHeight) / L; // + = onto the rear
     const latT = (m * ay * P.cgHeight) / (2 * D.track); // + = onto the right
-    const front = (m * G * B_REAR) / L + downforce * P.aeroBalance - longT;
-    const rear = (m * G * A_FRONT) / L + downforce * (1 - P.aeroBalance) + longT;
+    const front = (m * gN * B_REAR) / L + downforce * P.aeroBalance - longT;
+    const rear = (m * gN * A_FRONT) / L + downforce * (1 - P.aeroBalance) + longT;
     const latF = latT * P.rollStiffFront, latR = latT * (1 - P.rollStiffFront);
     const loads = [front / 2 - latF, front / 2 + latF, rear / 2 - latR, rear / 2 + latR];
 
@@ -281,7 +293,8 @@ export class CarPhysics {
     }
     const lsd = P.lsdLock * (W[2].omega - W[3].omega);
 
-    let FX = -drag, FY = 0, MZ = 0;
+    // gravity along the slope
+    let FX = -drag - m * G * this.gradeF, FY = -m * G * this.gradeL, MZ = 0;
     let spin = 0;
     for (let i = 0; i < 4; i++) {
       const w = W[i];
@@ -398,6 +411,20 @@ export class CarPhysics {
     this.trackIndex = q.i;
     this.trackS = q.s;
     this.lateral = q.lateral;
+  }
+
+  /** Road height and slope under the car (the road is level across its width). */
+  sampleSlope() {
+    const T = this.track;
+    const s = this.trackS;
+    this.height = T.heightAt(s);
+    const grade = T.gradeAt(s);
+    const i = this.trackIndex;
+    const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
+    // the slope points along the track tangent; project it onto the car's axes
+    this.gradeF = grade * (sin * T.tx[i] + cos * T.tz[i]);
+    this.gradeL = grade * (cos * T.tx[i] - sin * T.tz[i]);
+    this.vcurv = T.vcurvAt(s);
   }
 
   /** Which surface each tyre's contact patch is on. */

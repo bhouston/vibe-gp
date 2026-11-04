@@ -6,12 +6,19 @@
 // Reference: OpenStreetMap highway=raceway ways operated by Circuit de Spa-Francorchamps
 // (Overpass, (c) OpenStreetMap contributors, ODbL), projected to metres about 50.437N 5.970E,
 // lightly smoothed and resampled (denser through corners).
+import elevation from './elevation/spa.js';
+
 export default {
   id: 'spa',
   name: 'Spa-Francorchamps',
   country: 'Belgium',
   realLength: 7004, // metres, official lap length
   width: 14,
+  // projection origin of the points (equirectangular), for scripts/fetch-elevation.mjs
+  geo: { lat: 50.437, lon: 5.97 },
+  elevation, // m above sea level around the lap (real terrain, see the generated file)
+  // red/white kerbs
+  kerb: { colors: [0xd0201c, 0xf2f2f2] },
   points: [
     [-383.2, 856.9], [-417.7, 917.8], [-452.4, 978.6], [-457.3, 987.3], [-462.2, 996], [-467.8, 1004.5],
     [-472.5, 1013.8], [-471, 1024.6], [-463.2, 1030.6], [-452.9, 1030], [-443.6, 1025.5], [-427.1, 1016.8],
