@@ -8,7 +8,7 @@
       gtag('js', new Date());
     </script>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
     <title>Vibe GP</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E%F0%9F%8F%81%3C/text%3E%3C/svg%3E" />
     <link rel="stylesheet" href="/src/style.css" />
@@ -79,6 +79,18 @@
           <div class="dim">Renderer: <span id="backend">…</span></div>
         </div>
       </div>
+      <div id="touch">
+        <div id="touch-steer" aria-label="Steer"><span>◀</span><span>▶</span></div>
+        <div class="touch-pedals">
+          <button type="button" data-hold="ArrowDown" class="brake">BRAKE</button>
+          <button type="button" data-hold="ArrowUp" class="gas">GAS</button>
+        </div>
+        <div class="touch-tools">
+          <button type="button" data-tap="Escape">MENU</button>
+          <button type="button" data-tap="KeyC">CAM</button>
+          <button type="button" data-tap="KeyR">RESET</button>
+        </div>
+      </div>
       <div id="error"></div>
     </div>
 
@@ -103,6 +115,12 @@
         </div>
         <p class="hint">Arrow keys to choose · Enter to race · Backspace to go back · Esc in-game to come back here</p>
       </section>
+    </div>
+
+    <div id="rotate">
+      <div class="rotate-icon"></div>
+      <b>Rotate your device</b>
+      <small>Vibe GP plays in landscape</small>
     </div>
 
     <script type="module" src="/src/main.js"></script>

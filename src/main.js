@@ -5,6 +5,7 @@ import { TrackPath } from './trackPath.js';
 import { Car, MIRROR_LAYER, PARKED } from './car.js';
 import { CarPhysics } from './physics.js';
 import { Input } from './input.js';
+import { bindTouch } from './touch.js';
 import { CameraRig } from './camera.js';
 import { LapTimer, StartLights, formatTime } from './race.js';
 import { Hud } from './hud.js';
@@ -156,6 +157,7 @@ async function start() {
   }
 
   const input = new Input();
+  bindTouch(input);
   const rig = new CameraRig(camera);
   const timer = new LapTimer();
   const startLights = new StartLights();
@@ -185,6 +187,10 @@ async function start() {
   const sound = new Sound();
   sound.setMusic(settings.get('music'));
   sound.setSfx(settings.get('sound'));
+  // a phone held upright: the #rotate overlay covers the game (style.css), which waits for it
+  const upright = matchMedia('(pointer: coarse) and (orientation: portrait) and (max-width: 600px)');
+  sound.setPaused(upright.matches);
+  upright.addEventListener('change', (e) => sound.setPaused(e.matches));
   /** Push the saved settings onto the car physics (a new track makes a new CarPhysics). */
   const applySettings = () => {
     physics.tc = settings.get('tc');
@@ -401,7 +407,7 @@ async function start() {
     const now = performance.now();
     const dt = Math.min((now - last) / 1000, 0.1);
     last = now;
-    if (compiling) return; // a track is loading behind the loading screen
+    if (compiling || upright.matches) return; // loading behind the loading screen, or paused
     if (!track) {
       menu.handleKeys(input);
       input.endFrame();

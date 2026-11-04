@@ -36,6 +36,8 @@ Suzuka's figure of eight crosses over itself: the back straight runs over the se
 | R | Reset to the grid |
 | Esc | Back to the track selector |
 
+On a phone or tablet the game shows touch controls (steering pad, gas, brake, menu, camera, reset); phones play in landscape. Tyre and front wing choices are keyboard or desktop HUD only.
+
 The gear in the top-right corner opens **Settings**: traction control (traction, stability & steering assists), ABS, damage on / off (off also repairs the car), music and sound effects. Settings are saved between sessions.
 
 ## Project layout

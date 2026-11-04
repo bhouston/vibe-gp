@@ -174,19 +174,27 @@ export class Sound {
 
     const unlock = () => this.unlock();
     addEventListener('pointerdown', unlock, true);
+    addEventListener('pointerup', unlock, true); // a touch only counts as a gesture when it lifts
     addEventListener('keydown', unlock, true);
     // no frames are drawn in a hidden tab, so the car's sound would hang on one note
     document.addEventListener('visibilitychange', () => {
       if (!this.ctx) return;
       if (document.hidden) this.ctx.suspend();
-      else this.ctx.resume();
+      else if (!this.paused) this.ctx.resume();
     });
+  }
+
+  /** Silence everything while the game is paused (no frames, so it would hang on one note). */
+  setPaused(on) {
+    this.paused = on;
+    if (on) this.ctx?.suspend();
+    else if (!document.hidden) this.ctx?.resume();
   }
 
   /** First user gesture: build the audio graph. Later gestures just wake a stalled context. */
   unlock() {
     if (this.ctx) {
-      if (this.ctx.state === 'suspended' && !document.hidden) this.ctx.resume();
+      if (this.ctx.state === 'suspended' && !document.hidden && !this.paused) this.ctx.resume();
       return;
     }
     const AC = window.AudioContext ?? window.webkitAudioContext;
