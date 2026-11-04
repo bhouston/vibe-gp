@@ -308,9 +308,13 @@ async function start() {
     await nextFrame();
     try {
       const parts = [...track.group.children, crews.group];
+      if (globalThis.__reverseCompile) parts.reverse(); // TEMP-DEBUG
+      window.__slow = []; // TEMP-DEBUG
       let t0 = performance.now();
       for (let k = 0; k < parts.length; k++) {
+        const tc = performance.now(); // TEMP-DEBUG
         await renderer.compileAsync(parts[k], camera, scene);
+        if (performance.now() - tc > 150) { const n = []; parts[k].traverse((o) => o.isMesh && n.push((o.material?.type ?? '') + ':' + (o.geometry?.attributes?.position?.count ?? 0))); window.__slow.push([k, Math.round(performance.now() - tc), n.slice(0, 3).join(' ')]); } // TEMP-DEBUG
         if (performance.now() - t0 > 40) {
           if (token !== loadToken) return;
           loading.progress(0.86 + 0.12 * (k / parts.length));

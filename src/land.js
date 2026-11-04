@@ -49,6 +49,16 @@ const pairs = (flat, from = 0) => {
   for (let k = from; k + 1 < flat.length; k += 2) out.push([flat[k], flat[k + 1]]);
   return out;
 };
+/** An OSM area's rings: outer first, then holes, separated by nulls in the flat list. */
+const ringsOf = (a) => {
+  const rings = [[]];
+  for (let k = 1; k < a.length; ) {
+    if (a[k] == null) { rings.push([]); k++; continue; } // null (or an empty slot)
+    rings[rings.length - 1].push([a[k], a[k + 1]]);
+    k += 2;
+  }
+  return rings.filter((r) => r.length >= 3);
+};
 
 export class LandMap {
   /**
@@ -67,7 +77,7 @@ export class LandMap {
 
     // areas by kind priority: OpenStreetMap first, then the hand-traced ones over them
     const byKind = (list) => [...list].sort((a, c) => KIND[a.kind] - KIND[c.kind]);
-    const osmAreas = (osm.areas ?? []).map((a) => ({ kind: a[0], pts: pairs(a, 1) })).filter((a) => a.kind in KIND);
+    const osmAreas = (osm.areas ?? []).map((a) => ({ kind: a[0], pts: ringsOf(a) })).filter((a) => a.kind in KIND);
     const hand = (def.land?.areas ?? []).filter((a) => a.kind in KIND);
     // hand areas with noTrees: no trees inside at all (also mapped single trees and rows);
     // such an area may leave out `kind` to only clear trees
@@ -106,20 +116,26 @@ export class LandMap {
     return k < 0 || this.cls[k] === NONE ? -1 : this.cls[k];
   }
 
-  /** Even-odd scanline fill of a map-coordinate polygon (into `cls`, or another grid). */
+  /**
+   * Even-odd scanline fill of a map-coordinate polygon (into `cls`, or another grid): one
+   * ring [[x, y], ...], or several [[[x, y], ...], ...] (an outer ring and its holes).
+   */
   fillPoly(pts, v, cls = this.cls) {
-    if (pts.length < 3) return;
+    const rings = Array.isArray(pts[0]?.[0]) ? pts : [pts];
+    if (rings[0].length < 3) return;
     const { nx, nz, x0, z0 } = this;
-    const wz = pts.map(([, y]) => -y);
-    const zmin = Math.min(...wz), zmax = Math.max(...wz);
+    let zmin = Infinity, zmax = -Infinity;
+    for (const r of rings) for (const [, y] of r) { zmin = Math.min(zmin, -y); zmax = Math.max(zmax, -y); }
     const j0 = Math.max(0, Math.floor((zmin - z0) / CELL)), j1 = Math.min(nz - 1, Math.ceil((zmax - z0) / CELL));
     const xs = [];
     for (let j = j0; j <= j1; j++) {
       const z = z0 + (j + 0.5) * CELL;
       xs.length = 0;
-      for (let k = 0, m = pts.length - 1; k < pts.length; m = k++) {
-        const za = wz[k], zb = wz[m];
-        if ((za > z) !== (zb > z)) xs.push(pts[k][0] + ((z - za) / (zb - za)) * (pts[m][0] - pts[k][0]));
+      for (const r of rings) {
+        for (let k = 0, m = r.length - 1; k < r.length; m = k++) {
+          const za = -r[k][1], zb = -r[m][1];
+          if ((za > z) !== (zb > z)) xs.push(r[k][0] + ((z - za) / (zb - za)) * (r[m][0] - r[k][0]));
+        }
       }
       xs.sort((a, c) => a - c);
       for (let k = 0; k + 1 < xs.length; k += 2) {

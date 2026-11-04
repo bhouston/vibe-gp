@@ -74,9 +74,19 @@ export default {
     [745, 'foot'], [2555, 'foot'], [3175, 'foot'], [3545, 'foot'],
     [4440, 'foot'], [4550, 'foot'], [5115, 'foot'], [5270, 'foot'],
   ],
+  // Bellagio: a ~17 m pavement/promenade (balustrade, trees) separates the Strip from the
+  // fountain lake; OSM's lake runs right up to the barrier
+  areas: [
+    { kind: 'concrete', pts: [[-953, 640], [-971, 640], [-981, 290], [-963, 290], [-957, 475]] },
+  ],
   kerb: { colors: [0xd0201c, 0xf2f2f2] },
   ground: 'paved',
-  scenery: { trees: 0, desert: false, city: true, paved: true, illuminated: true },
+  scenery: {
+    trees: 0, desert: false, city: true, paved: true, illuminated: true,
+    // the only OSM 'scrub' is the bare dirt/gravel lot west of Koval Lane (~700-850): no trees, dusty tan
+    landTrees: { scrub: 0 },
+    landColors: { scrub: 0x8c8272, scrubDark: 0x7a705f },
+  },
   notes: `Urban night street circuit: no sand or grass anywhere near the track; beyond the walls it
 is roads, open-air car parks, casinos/hotels and some vacant/construction lots, so ground is
 'paved' and the scenery 'illuminated' (the Strip's neon fits the bright festival lighting).
