@@ -96,6 +96,13 @@ const nearTrack = (x, y, r) => {
 const r1 = (v) => Math.round(v * 10) / 10;
 function simplify(pts, tol) {
   if (pts.length < 3) return pts;
+  const [fx, fy] = pts[0], [lx, ly] = pts[pts.length - 1];
+  if (pts.length > 3 && Math.hypot(fx - lx, fy - ly) < 0.01) {
+    // closed: split at the point farthest from the first so neither half is degenerate
+    let far = 0, fd = -1;
+    pts.forEach(([x, y], k) => { const d = Math.hypot(x - fx, y - fy); if (d > fd) { fd = d; far = k; } });
+    return [...simplify(pts.slice(0, far + 1), tol), ...simplify(pts.slice(far), tol).slice(1)];
+  }
   const keep = new Uint8Array(pts.length);
   keep[0] = keep[pts.length - 1] = 1;
   const stack = [[0, pts.length - 1]];
@@ -132,8 +139,14 @@ for (const e of data.elements) {
   }
   if (e.type === 'way' && t.natural === 'coastline' && e.geometry) coast.push(simplify(ring(e.geometry), 1));
   if (t.natural === 'water') {
-    if (e.type === 'way' && e.geometry) water.push(simplify(ring(e.geometry), 1));
-    for (const m of e.members ?? []) if (m.role === 'outer' && m.geometry) water.push(simplify(ring(m.geometry), 1));
+    // basins and lakes, not fountains and pools
+    // only closed outlines: a big lake/sea relation comes as open pieces (its shore is the coastline)
+    const add = (g) => {
+      const r = ring(g);
+      if (r.length > 3 && Math.hypot(r[0][0] - r[r.length - 1][0], r[0][1] - r[r.length - 1][1]) < 0.01 && area(r) >= 1500) water.push(simplify(r, 1));
+    };
+    if (e.type === 'way' && e.geometry) add(e.geometry);
+    for (const m of e.members ?? []) if (m.role === 'outer' && m.geometry) add(m.geometry);
   }
   if (e.type === 'way' && (t.barrier === 'city_wall' || t.historic === 'citywalls') && e.geometry) walls.push(simplify(ring(e.geometry), 0.3));
   if (e.type === 'way' && /^(pier|breakwater|groyne)$/.test(t.man_made ?? '') && e.geometry) piers.push(simplify(ring(e.geometry), 0.5));

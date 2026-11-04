@@ -252,6 +252,7 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
 .tyre.kerb { box-shadow: 0 0 0 2px #e10600; }
 .tyre.grass { box-shadow: 0 0 0 2px #3fa34d; }
 .tyre.gravel { box-shadow: 0 0 0 2px #c9b48a; }
+.tyre.runoff { box-shadow: 0 0 0 2px #4f7fb0; }
 .aids { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .aids span { font-size: 11px; font-weight: 800; letter-spacing: 0.1em; padding: 2px 6px; border-radius: 4px; background: #2a2f3a; color: #9aa3b5; }
 .aids span.on { background: #1f6f3f; color: #fff; }

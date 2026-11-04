@@ -115,7 +115,7 @@ export class Hud {
     const dmg = car.damage;
     const wingHurt = dmg.wingHealth < 0.85;
     const wingNext = pitStop?.state === 'service' ? pitStop.changingWing : !!pitStop?.nextWing;
-    e.surface.textContent = pitText(pitStop, car) ?? (car.inPitLane ? 'PIT LIMITER 80' : car.onPitLane ? 'PIT LANE' : car.surface === 'gravel' ? 'IN THE GRAVEL' : car.surface === 'grass' ? 'OFF TRACK' : dirt > 0.15 ? 'DIRTY TYRES'
+    e.surface.textContent = pitText(pitStop, car) ?? (car.inPitLane ? 'PIT LIMITER 80' : car.onPitLane ? 'PIT LANE' : car.surface === 'gravel' ? 'IN THE GRAVEL' : car.surface === 'grass' || car.surface === 'runoff' ? 'OFF TRACK' : dirt > 0.15 ? 'DIRTY TYRES'
       : wingHurt && !wingNext ? 'FRONT WING DAMAGED · F: NEW WING AT THE NEXT STOP' : '');
     // front wing: condition per half, and whether a new one goes on at the next stop
     dmg.wing.forEach((d, i) => {
@@ -153,6 +153,7 @@ export class Hud {
       el.classList.toggle('slide', w.slide > 1.05);
       el.classList.toggle('kerb', w.surface.name === 'kerb' || w.surface.name === 'sausage');
       el.classList.toggle('grass', w.surface.name === 'grass');
+      el.classList.toggle('runoff', w.surface.name === 'runoff');
       el.classList.toggle('gravel', w.surface.name === 'gravel');
       el.style.setProperty('--dmg', `${Math.round(w.damage * 100)}%`);
       el.classList.toggle('damaged', w.damage > 0.5);

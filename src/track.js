@@ -5,15 +5,24 @@ import * as THREE from 'three/webgpu';
 import { boxGeometry, ribbonGeometry, planeXZ } from './geometry.js';
 import {
   asphaltMaterial, kerbMaterial, grassMaterial, checkerMaterial, simpleMaterial, layered,
-  gravelMaterial, sausageMaterial,
+  gravelMaterial, sausageMaterial, pavedMaterial,
 } from './materials.js';
 import { buildGarageFronts } from './pitBoxes.js';
 import { buildBarriers, slopeNormal } from './barriers.js';
 import { buildGrandstands } from './grandstands.js';
 import { color, float, uv, mix, step, abs, fract, positionWorld, mx_noise_float, mx_fractal_noise_float } from 'three/tsl';
 import { TrackPath, KERB_WIDTH, PIT, SAUSAGE, angleDiff } from './trackPath.js';
-import { buildFloodMask, applyFloodMask, buildFloodlights } from './night.js';
+import { buildFloodMask, applyFloodMask, buildFloodlights, buildLedStrips, nightU, floodLit } from './night.js';
+import { buildCityscape, buildCityWalls, buildTunnels } from './cityscape.js';
 import { TerrainField, terrainGeometry, buildTrees, buildCity, TERRAIN_DROP, VERGE, SKIRT } from './terrain.js';
+
+// Night look for scenery.illuminated circuits: towers every `spacing` m, the dark beyond
+// the floodlights only `floor` deep and reached over `falloff` m, stronger point lights,
+// and purple/blue LED strips and plaza glow.
+const ILLUMINATED = {
+  spacing: 34, floor: 0.12, falloff: 240, strength: 900,
+  led: [0x9b3cff, 0x3c64ff], glow: [0x8a2cff, 0x2f5bff],
+};
 
 /**
  * Pit lane surface. uv.x = metres along the lane, uv.y = metres across from the lane
@@ -59,8 +68,11 @@ export class Track {
 
     // ground: a terrain heightfield following the track's height, and flat grass verges
     // at road level out past the walls (the terrain drops just below them)
+    // (scenery.paved: no sand or grass anywhere, painted asphalt run-off and paved ground)
     const sc = this.def.scenery ?? {};
-    const grass = grassMaterial(sc.desert ? 'desert' : sc.dunes ? 'dunes' : sc.city ? 'city' : 'grass');
+    const grass = sc.paved
+      ? pavedMaterial({ paint: sc.paint, glow: sc.illuminated ? ILLUMINATED.glow : null }, nightU, floodLit)
+      : grassMaterial(sc.desert ? 'desert' : sc.dunes ? 'dunes' : sc.city ? 'city' : 'grass');
     this.field = new TerrainField(P);
     const ground = new THREE.Mesh(terrainGeometry(this.field), grass);
     ground.receiveShadow = true;
@@ -70,7 +82,9 @@ export class Track {
     // asphalt: uv.x = metres along, uv.y = 0 (right edge) .. 1 (left edge)
     // Flat layers a few cm apart are below depth precision from a high or distant camera,
     // so they are also layered with polygon offset: grass < road < kerbs / pit lane < paint.
-    const road = this.strip(-P.hw, P.hw, 0.02, (lat) => (lat + P.hw) / P.width);
+    // (where a street circuit narrows between buildings, the asphalt stops under the barriers)
+    const edgeL = (i) => Math.min(P.hw, P.wallL[i]), edgeR = (i) => -Math.min(P.hw, P.wallR[i]);
+    const road = this.strip(edgeR, edgeL, 0.02, (lat) => (lat + P.hw) / P.width);
     g.add(this.mesh(road, layered(asphaltMaterial(), 1)));
 
     // kerbs on each side of every corner run (none where the pit wall or pit lane takes their place)
@@ -107,16 +121,27 @@ export class Track {
     // spectator grandstands wherever there is room beside the circuit
     this.stands = buildGrandstands(P, g);
     // woods and tree lines beyond the circuit, clear of the stands
-    buildTrees(P, this.field, this.stands, g, this.def.id, this.def.scenery);
-    if (this.def.scenery?.city) buildCity(P, this.field, this.stands, g, this.def.scenery);
+    // the real city (OpenStreetMap buildings, old city walls) or procedural blocks; then
+    // woods and tree lines beyond the circuit, clear of the stands and buildings
+    const city = this.def.city ? buildCityscape(P, this.field, this.stands, g, this.def) : null;
+    if (city) buildCityWalls(P, this.field, g, this.def);
+    buildTrees(P, this.field, this.stands, g, this.def.id, this.def.scenery, city?.occupied);
+    if (this.def.scenery?.city && !city) buildCity(P, this.field, this.stands, g, this.def.scenery);
     // decks under the road where the circuit crosses over itself
     if (P.bridge.some(Boolean)) g.add(this.bridges());
+    // tunnels (after everything else: their shade mask darkens every material beneath them)
+    if (this.def.tunnels) buildTunnels(P, g, this.def);
 
     // night races: floodlight towers, and the land beyond their reach falls into darkness
     this.floodHeads = [];
+    // (scenery.illuminated: lit like Jeddah, denser towers, far more light spilling beyond
+    // the walls, and LED strips along the wall tops)
     if (this.def.night) {
-      this.floodHeads = buildFloodlights(P, this.field, this.stands, g);
-      this.floodMask = buildFloodMask(P, this.stands);
+      const lit = sc.illuminated ? ILLUMINATED : {};
+      this.floodHeads = buildFloodlights(P, this.field, this.stands, g, lit.spacing);
+      this.floodMask = buildFloodMask(P, this.stands, lit);
+      this.floodStrength = lit.strength;
+      if (sc.illuminated) buildLedStrips(P, g, ILLUMINATED.led);
       applyFloodMask(g);
     }
 
@@ -186,11 +211,13 @@ export class Track {
   }
 
   /** Strip between two lateral offsets, `y` above the road. uvY(lat) maps offset -> uv.y. */
-  strip(latA, latB, y, uvY, i0 = 0, count = this.path.N + 1) {
+  /** latA / latB: lateral offsets, or functions of the sample index (a street that narrows). */
+  strip(latA0, latB0, y, uvY, i0 = 0, count = this.path.N + 1) {
     const P = this.path;
     return ribbonGeometry(count, (k) => {
       const i = P.wrap(i0 + k);
       const s = (i0 + k) * P.ds;
+      const latA = typeof latA0 === 'function' ? latA0(i) : latA0, latB = typeof latB0 === 'function' ? latB0(i) : latB0;
       const lx = P.leftX(i), lz = P.leftZ(i), h = P.py[i] + y;
       return {
         a: [P.px[i] + lx * latA, h, P.pz[i] + lz * latA],
@@ -285,7 +312,7 @@ export class Track {
     const geos = [];
     // one side of a path: flat from the centre to edge(k), then down to outer(k).
     // uv = (metres along, lateral offset); attribute grass = (mowing direction, stripes, mown)
-    const side = (count, at, edge, outer) => {
+    const side = (count, at, edge, outer, runoff = 1) => {
       for (const [from, to, drop] of [[() => 0, edge, 0], [edge, outer, -TERRAIN_DROP - 0.4]]) {
         const geo = ribbonGeometry(count, (k) => {
           const c = at(k), a = from(k), b = to(k);
@@ -294,7 +321,7 @@ export class Track {
         const grass = new Float32Array(count * 8);
         for (let k = 0; k < count; k++) {
           const t = at(k).t;
-          grass.set([t[0], t[1], 1, 1, t[0], t[1], 1, 1], k * 8);
+          grass.set([t[0], t[1], runoff, 1, t[0], t[1], runoff, 1], k * 8);
         }
         geo.setAttribute('grass', new THREE.BufferAttribute(grass, 4));
         geos.push(geo);
@@ -330,7 +357,7 @@ export class Track {
         const cap = (j) => insideCap(kp[j], sgn);
         const edge = (j) => sgn * Math.max(PIT.hw + 0.5, Math.min(width(j), cap(j)));
         const outer = (j) => sgn * Math.max(Math.abs(edge(j)) + 0.5, Math.min(width(j) + SKIRT, cap(j)));
-        side(pit.N, laneAt, edge, outer);
+        side(pit.N, laneAt, edge, outer, this.def.scenery?.paved ? 0 : 1);
       }
     }
     return geos;

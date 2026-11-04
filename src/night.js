@@ -9,10 +9,11 @@
 import * as THREE from 'three/webgpu';
 import {
   texture, uniform, positionWorld, vec2, vec3, vec4, uv, float, smoothstep, length,
-  materialColor, instancedBufferAttribute, color,
+  materialColor, instancedBufferAttribute, color, mix, sin,
 } from 'three/tsl';
-import { boxGeometry } from './geometry.js';
-import { PIT } from './trackPath.js';
+import { boxGeometry, ribbonGeometry } from './geometry.js';
+import { WALL_HEIGHT } from './barriers.js';
+import { PIT, WALL_THICKNESS } from './trackPath.js';
 import { VERGE } from './terrain.js';
 
 const CELL = 4; // mask resolution (m per texel)
@@ -45,16 +46,17 @@ const smooth = (e0, e1, x) => {
 
 /**
  * Rasterise the floodlit area: the track corridor out to its walls and verges, the pit
- * lane with its garages, and every grandstand, each fading out over FALLOFF metres.
+ * lane with its garages, and every grandstand, each fading out over `falloff` metres to
+ * `floor` (a brightly lit city circuit keeps far more light beyond its walls).
  */
-export function buildFloodMask(P, stands) {
+export function buildFloodMask(P, stands, { floor = NIGHT_FLOOR, falloff = FALLOFF } = {}) {
   const b = P.bounds();
   const x0 = b.minX - MARGIN, z0 = b.minZ - MARGIN;
   const nx = Math.ceil((b.maxX - b.minX + 2 * MARGIN) / CELL), nz = Math.ceil((b.maxZ - b.minZ + 2 * MARGIN) / CELL);
   const lit = new Float32Array(nx * nz);
   // disc of radius r0 fully lit, fading to 0 at r0 + FALLOFF
   const stamp = (x, z, r0) => {
-    const R = r0 + FALLOFF;
+    const R = r0 + falloff;
     const ci = (x - x0) / CELL, cj = (z - z0) / CELL, rc = Math.ceil(R / CELL);
     for (let j = Math.max(0, Math.floor(cj - rc)); j <= Math.min(nz - 1, Math.ceil(cj + rc)); j++) {
       for (let i = Math.max(0, Math.floor(ci - rc)); i <= Math.min(nx - 1, Math.ceil(ci + rc)); i++) {
@@ -81,7 +83,7 @@ export function buildFloodMask(P, stands) {
     }
   }
   const data = new Uint8Array(nx * nz);
-  for (let k = 0; k < data.length; k++) data[k] = Math.round(255 * (NIGHT_FLOOR + (1 - NIGHT_FLOOR) * lit[k]));
+  for (let k = 0; k < data.length; k++) data[k] = Math.round(255 * (floor + (1 - floor) * lit[k]));
   const tex = new THREE.DataTexture(data, nx, nz, THREE.RedFormat, THREE.UnsignedByteType);
   tex.magFilter = tex.minFilter = THREE.LinearFilter;
   tex.needsUpdate = true;
@@ -117,7 +119,7 @@ const REACH = 3.2; // arm length out over the fence, towards the track (m)
  * halo. Skips anywhere a tower would stand on another part of the track, in the pit
  * lane or on a grandstand. Returns the lamp-head positions (for the point-light pool).
  */
-export function buildFloodlights(P, field, stands, group) {
+export function buildFloodlights(P, field, stands, group, spacing = SPACING) {
   const pit = P.pit;
   // centreline points on a coarse grid, to check a tower is clear of every other section
   const G = 40, grid = new Map();
@@ -160,7 +162,7 @@ export function buildFloodlights(P, field, stands, group) {
   };
 
   const towers = []; // { x, z, y0, y1, yaw }  yaw: direction from mast to track
-  const every = Math.max(1, Math.round(SPACING / P.ds));
+  const every = Math.max(1, Math.round(spacing / P.ds));
   for (const side of [1, -1]) {
     const off = side > 0 ? 0 : Math.round(every / 2);
     for (let i = off; i < P.N; i += every) {
@@ -224,6 +226,46 @@ export function buildFloodlights(P, field, stands, group) {
   sprites.renderOrder = 10;
   group.add(sprites);
   return heads;
+}
+
+/* ---------------- LED strips ---------------- */
+
+/**
+ * Glowing LED strips along the track face of every main wall, just under its top edge
+ * (above the advertising band), shading slowly between two colours along the lap like
+ * the purple and blue lighting at Jeddah. Emissive, so they glow through the dark.
+ */
+export function buildLedStrips(P, group, [ca, cb]) {
+  const mat = new THREE.MeshBasicNodeMaterial();
+  const s = uv().x.div(90.0);
+  const wave = sin(s).mul(0.5).add(0.5);
+  // a soft brighter pulse travelling along each strip every ~25 m
+  const pulse = smoothstep(0.75, 1.0, sin(s.mul(3.6)).mul(0.5).add(0.5)).mul(0.6).add(1.0);
+  mat.colorNode = mix(color(ca), color(cb), wave).mul(pulse).mul(1.7);
+  mat.userData.noFlood = true;
+  const LO = WALL_HEIGHT - 0.17, HI = WALL_HEIGHT - 0.04;
+  for (const line of P.walls) {
+    if (!line.render || line.kind !== 'main') continue;
+    const sd = line.side, idx = line.idx, n = idx.length;
+    const tyre = sd > 0 ? P.tyreL : P.tyreR, wall = sd > 0 ? P.wallL : P.wallR;
+    const I = (k) => idx[k % n];
+    const at = (i) => {
+      const lat = sd * (wall[i] + tyre[i] - WALL_THICKNESS / 2 - 0.015);
+      return [P.px[i] + P.leftX(i) * lat, P.pz[i] + P.leftZ(i) * lat];
+    };
+    const count = line.closed ? n + 1 : n;
+    let d = 0, prev = null;
+    const geo = ribbonGeometry(count, (k) => {
+      const i = I(k), [x, z] = at(i);
+      if (prev) d += Math.hypot(x - prev[0], z - prev[1]);
+      prev = [x, z];
+      return {
+        a: [x, P.py[i] + LO, z], b: [x, P.py[i] + HI, z],
+        na: [-P.leftX(i) * sd, 0, -P.leftZ(i) * sd], uva: [d, 0], uvb: [d, 1],
+      };
+    });
+    group.add(new THREE.Mesh(geo, mat));
+  }
 }
 
 /**

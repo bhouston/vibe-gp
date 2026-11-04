@@ -382,7 +382,7 @@ async function start() {
     const py = physics.height;
     sun.position.set(p.x + keyDir[0] * 100, py + keyDir[1] * 100, p.z + keyDir[2] * 100);
     sun.target.position.set(p.x, py, p.z);
-    floods.update(camera.position);
+    floods.update(camera.position, track?.floodStrength);
 
     boxMarker.update(dt, pitStop, !menu.visible);
     hud.update(physics, timer, rig.mode, pitStop);

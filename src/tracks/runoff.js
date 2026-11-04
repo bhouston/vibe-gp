@@ -10,6 +10,10 @@
 // Gravel fills the run-off from just past the kerb out to the barrier (TrackPath.computeRunoff),
 // and only where there is room for it; sausage kerbs sit just behind the painted kerb.
 // `gravel` (optional) is the stone colour.
+// `auto` (optional): also place gravel and sausages from the track's corners by style:
+// 'gravel', 'mixed', 'asphalt' or 'street' (see src/runoffPlan.js autoSurfaces).
+// `widen` (optional): how much the run-off widens on the outside of fast corners
+// (0..1; default 1, 0.4 for city circuits, 0 where the track sets its own `runoff`).
 //
 // Sources: circuit maps and onboard footage as of the 2024-2025 seasons; Spa's 2022 rebuild
 // (gravel returned at La Source, Raidillon, Les Combes, Stavelot and Blanchimont). Corners
@@ -91,6 +95,39 @@ export const RUNOFF = {
     ],
     sausages: [],
   },
-  // Not listed: circuits with asphalt run-off or walls in the places that matter (Jeddah,
-  // Miami, Bahrain, Shanghai) and the test oval.
+  // --- placed from the corners by style (src/runoffPlan.js autoSurfaces) ---
+  // gravel: classic circuits with gravel beyond nearly every corner
+  albertpark: { auto: 'gravel', gravel: 0xb3a68c },
+  hungaroring: { auto: 'gravel', gravel: 0xb8a27c },
+  zandvoort: { auto: 'gravel', gravel: 0xc9b68f }, // pale dune-sand gravel, close to the track
+  lusail: { auto: 'gravel', gravel: 0xc6b088 }, // built for MotoGP: gravel all round
+  // mixed: gravel where cars arrive fast or brake hard, paved or grass run-off elsewhere
+  barcelona: { auto: 'mixed', gravel: 0xb59f7c },
+  redbullring: { auto: 'mixed', gravel: 0xa5a199 }, // grey Styrian stone
+  monza: {
+    auto: 'mixed',
+    gravel: 0xb3a58a,
+    // the yellow sausages in the three chicanes
+    sausages: [
+      ['Variante del Rettifilo', 'apexes', -30, 50],
+      ['Variante della Roggia', 'apexes', -30, 50],
+      ['Variante Ascari', 'apexes', -40, 80],
+    ],
+  },
+  cota: { auto: 'mixed', gravel: 0xb09d80 },
+  mexico: { auto: 'mixed', gravel: 0xa89c88 },
+  interlagos: { auto: 'mixed', gravel: 0xa59a86 },
+  // asphalt: modern paved run-off, gravel only past the fastest corners, sausage kerbs
+  // behind the exit kerbs of the slow ones
+  shanghai: { auto: 'asphalt', gravel: 0xa8a29a },
+  bahrain: { auto: 'asphalt', gravel: 0xcbb690 }, // desert sand
+  miami: { auto: 'asphalt', gravel: 0xb0a898 },
+  yasmarina: { auto: 'asphalt', gravel: 0xd0c0a0 },
+  madring: { auto: 'asphalt', gravel: 0xb5a88f },
+  // street: walls, so only sausage kerbs in the chicanes where there's room
+  jeddah: { auto: 'street', widen: 0.4 },
+  singapore: { auto: 'street' },
+  lasvegas: { auto: 'street' },
+  baku: { auto: 'street' },
+  monaco: { auto: 'street' },
 };

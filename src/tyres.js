@@ -134,6 +134,21 @@ export const SURFACES = {
     aeroLoss: 0.35,
     dirt: 0.06,
   },
+  // painted asphalt run-off (scenery.paved, e.g. Jeddah): a smooth paved surface, but
+  // dusty, unrubbered and slick with paint, so noticeably less grip than the racing line
+  runoff: {
+    name: 'runoff',
+    mu: 1.45,
+    loadExp: 0.85,
+    peakAlpha: 0.09,
+    peakKappa: 0.1,
+    lat: new SlipCurve(1.35, -0.5),
+    long: new SlipCurve(1.6, -0.4),
+    crr: 0.015,
+    bump: 0,
+    aeroLoss: 0,
+    dirt: 0.004, // dust and marbles off the run-off
+  },
   // sausage kerb: a ~11 cm high rounded hump behind the kerb. A wheel that rides over it
   // is thrown up and briefly unloaded: a big, sharp load swing and the floor stalling.
   sausage: {

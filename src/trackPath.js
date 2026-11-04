@@ -23,6 +23,7 @@
 // car collides against their segments (wallContact), so any layout works.
 import { CatmullRomCurve3, Vector3 } from 'three/webgpu';
 import { RUNOFF } from './tracks/runoff.js';
+import { speedProfile, findCorners, wantedWalls, clearWidened, autoSurfaces } from './runoffPlan.js';
 
 export const KERB_WIDTH = 1.6;
 export const WALL_THICKNESS = 0.6;
@@ -187,12 +188,26 @@ export class TrackPath {
    * Starts at the default run-off, then shrinks to avoid (a) the inside of tight
    * corners folding over itself and (b) intruding on other parts of the circuit.
    */
+  /**
+   * How much the run-off widens on the outside of fast corners: runoff.js `widen`, else
+   * none where the track sets its own run-off (a street circuit), less in a city.
+   */
+  widenScale() {
+    const w = (this.def.surfaces ?? RUNOFF[this.def.id])?.widen;
+    if (w !== undefined) return w;
+    return this.def.runoff !== undefined ? 0 : this.def.scenery?.city ? 0.4 : 1;
+  }
+
   computeWalls() {
     const N = this.N;
     const base = this.hw + KERB_WIDTH + this.runoff;
     const minWall = this.hw + KERB_WIDTH + 1.5;
-    const wl = new Float64Array(N).fill(base);
-    const wr = new Float64Array(N).fill(base);
+    // the default run-off, widened on the outside of corners by how fast cars get there
+    this.speedEst = speedProfile(this);
+    this.turns = findCorners(this, this.speedEst);
+    const want = wantedWalls(this, this.turns, this.widenScale());
+    const wl = Float64Array.from(want.L);
+    const wr = Float64Array.from(want.R);
     for (let i = 0; i < N; i++) {
       const k = this.curvature[i];
       if (Math.abs(k) > 1e-6) {
@@ -245,6 +260,8 @@ export class TrackPath {
         }
       }
     }
+    // widened run-off never reaches into another stretch's run-off or the pit lane
+    clearWidened(this, wl, wr, base);
     // smooth: erode (min over a window) then blur, so walls never jump inwards abruptly
     const win = Math.round(16 / this.ds);
     this.wallL = boxFilter(minFilter(wl, win), win);
@@ -252,6 +269,78 @@ export class TrackPath {
     for (let i = 0; i < N; i++) {
       this.wallL[i] = Math.max(this.wallL[i], minWall);
       this.wallR[i] = Math.max(this.wallR[i], minWall);
+    }
+    if (this.def.city) this.narrowToCity();
+  }
+
+  /**
+   * Street circuits: real buildings and old city walls (def.city, see scripts/fetch-city.mjs)
+   * stand at the edge of the street, so the barrier can't be further out than the facade.
+   * Where they come closer than the usual wall, the wall moves in to just in front of them,
+   * even inside the asphalt (Baku's castle section narrows to ~7.6 m). Obstacles that
+   * would leave less than STREET_MIN of half width are taken as mapping noise (a footprint
+   * drawn over the road) and ignored, as are raised structures and the tunnel stretches.
+   */
+  narrowToCity() {
+    const N = this.N, c = this.def.city;
+    const STREET_MIN = 3.9, FACADE_GAP = 1.0;
+    // obstacle segments in world coordinates, hashed by cell
+    const segs = [];
+    const addLine = (flat, closed) => {
+      const n = flat.length / 2;
+      for (let k = 0; k < (closed ? n : n - 1); k++) {
+        const a = k * 2, b = ((k + 1) % n) * 2;
+        segs.push([flat[a], -flat[a + 1], flat[b], -flat[b + 1]]);
+      }
+    };
+    for (const bld of c.buildings ?? []) if (bld[1] < 3) addLine(bld.slice(2), true);
+    for (const w of c.walls ?? []) addLine(w, false);
+    const cell = 20, grid = new Map();
+    segs.forEach(([ax, az, bx, bz], k) => {
+      const x0 = Math.floor(Math.min(ax, bx) / cell), x1 = Math.floor(Math.max(ax, bx) / cell);
+      const z0 = Math.floor(Math.min(az, bz) / cell), z1 = Math.floor(Math.max(az, bz) / cell);
+      for (let gx = x0; gx <= x1; gx++) for (let gz = z0; gz <= z1; gz++) {
+        const key = cellKey(gx, gz);
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push(k);
+      }
+    });
+    const inTunnel = (i) => (this.def.tunnels ?? []).some(([a, b]) => i * this.ds >= a - 10 && i * this.ds <= b + 10);
+    const reach = this.hw + KERB_WIDTH + this.runoff + 2;
+    const limL = new Float64Array(N).fill(Infinity), limR = new Float64Array(N).fill(Infinity);
+    for (let i = 0; i < N; i++) {
+      if (inTunnel(i)) continue;
+      for (const side of [1, -1]) {
+        // march along the normal and take the first facade it crosses
+        const ox = this.px[i], oz = this.pz[i];
+        const dx = this.leftX(i) * side, dz = this.leftZ(i) * side;
+        const ex = ox + dx * reach, ez = oz + dz * reach;
+        const seen = new Set();
+        let best = Infinity;
+        for (let t = 0; t <= reach; t += cell / 2) {
+          const key = cellKey(Math.floor((ox + dx * t) / cell), Math.floor((oz + dz * t) / cell));
+          for (const k of grid.get(key) ?? []) {
+            if (seen.has(k)) continue;
+            seen.add(k);
+            const [ax, az, bx, bz] = segs[k];
+            const hit = segmentHit(ox, oz, ex, ez, ax, az, bx, bz);
+            if (hit !== null) best = Math.min(best, hit * reach);
+          }
+        }
+        if (best < STREET_MIN + FACADE_GAP - 0.2) continue; // mapped over the road: ignore
+        (side > 0 ? limL : limR)[i] = best - FACADE_GAP;
+      }
+    }
+    const win = Math.max(1, Math.round(10 / this.ds));
+    this.cityNarrow = new Uint8Array(N);
+    for (const [wall, lim] of [[this.wallL, limL], [this.wallR, limR]]) {
+      const sm = boxFilter(minFilter(lim.map((v) => Math.min(v, 1e3)), win), win);
+      for (let i = 0; i < N; i++) {
+        if (sm[i] < wall[i]) {
+          wall[i] = Math.max(sm[i], STREET_MIN);
+          if (wall[i] < this.hw + 0.3) this.cityNarrow[i] = 1;
+        }
+      }
     }
   }
 
@@ -382,6 +471,10 @@ export class TrackPath {
   computeRunoff() {
     const N = this.N, ds = this.ds, hw = this.hw;
     const spec = this.def.surfaces ?? RUNOFF[this.def.id] ?? {};
+    // hand-placed entries, plus ones placed from the corners by the circuit's style
+    const auto = autoSurfaces(this, this.turns, spec.auto);
+    const traps = [...(spec.traps ?? []), ...auto.traps];
+    const sausages = [...(spec.sausages ?? []), ...auto.sausages];
     this.gravelColor = spec.gravel ?? 0xab9f88;
     this.gravelInL = new Float32Array(N);
     this.gravelOutL = new Float32Array(N);
@@ -431,7 +524,7 @@ export class TrackPath {
 
     const gravelIn = hw + KERB_WIDTH + 1.2; // a strip of grass between the kerb and the stones
     const taper = Math.max(1, Math.round(10 / ds));
-    resolve(spec.traps, (i0, sgn, a, b) => {
+    resolve(traps, (i0, sgn, a, b) => {
       const wall = sgn > 0 ? this.wallL : this.wallR, tyre = sgn > 0 ? this.tyreL : this.tyreR;
       const open = sgn > 0 ? this.openL : this.openR;
       const pitSide = this.pit && this.pit.side === sgn;
@@ -464,7 +557,7 @@ export class TrackPath {
         d0 = d1 + 1;
       }
     });
-    resolve(spec.sausages, (i0, side, a, b) => {
+    resolve(sausages, (i0, side, a, b) => {
       for (let d = a; d <= b; d++) {
         const i = this.wrap(i0 + d), k = this.curvature[i];
         const sgn = side || (Math.abs(k) > 1 / 150 ? Math.sign(k) : 0);
@@ -483,7 +576,7 @@ export class TrackPath {
     if ((left ? this.sausageL : this.sausageR)[i] && off >= this.sausageLat && off <= this.sausageLat + SAUSAGE.width) return 'sausage';
     const gIn = (left ? this.gravelInL : this.gravelInR)[i], gOut = (left ? this.gravelOutL : this.gravelOutR)[i];
     if (gOut && off >= gIn && off <= gOut) return 'gravel';
-    return 'grass';
+    return this.def.scenery?.paved ? 'runoff' : 'grass';
   }
 
   /**
@@ -980,6 +1073,16 @@ function segmentsCross(ax, az, bx, bz, cx, cz, dx, dz) {
   const d1 = o(ax, az, bx, bz, cx, cz), d2 = o(ax, az, bx, bz, dx, dz);
   const d3 = o(cx, cz, dx, dz, ax, az), d4 = o(cx, cz, dx, dz, bx, bz);
   return d1 * d2 < 0 && d3 * d4 < 0;
+}
+
+/** Fraction t along p→e where segment p-e crosses segment a-b, or null. */
+function segmentHit(px, pz, ex, ez, ax, az, bx, bz) {
+  const rx = ex - px, rz = ez - pz, sx = bx - ax, sz = bz - az;
+  const den = rx * sz - rz * sx;
+  if (Math.abs(den) < 1e-12) return null;
+  const t = ((ax - px) * sz - (az - pz) * sx) / den;
+  const u = ((ax - px) * rz - (az - pz) * rx) / den;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? t : null;
 }
 
 function cellKey(x, z) {

@@ -139,6 +139,60 @@ export function grassMaterial(ground = 'grass') {
   return m;
 }
 
+/**
+ * Paved ground for circuits with no sand or grass anywhere (Jeddah): the same `grass`
+ * attribute as grassMaterial, read as (–, –, runoff, nearTrack).
+ *  - runoff = 1 (the verges, kerb out to the wall): painted asphalt run-off in diagonal
+ *    two-tone bands (uv = metres along, lateral offset), worn by tyre streaks.
+ *  - elsewhere: asphalt and concrete hardstanding, plazas and car parks.
+ * glow (night only, via nightU): coloured light washing over plazas and fan zones out
+ * around the circuit (within the floodlit venue, from `floodLit`), emissive so the
+ * floodlight mask doesn't darken it.
+ */
+export function pavedMaterial({ paint = [0x35587e, 0x474b52], glow = null } = {}, nightU = null, floodLit = null) {
+  const m = new THREE.MeshStandardNodeMaterial();
+  const p = positionWorld.xz;
+  const g = attribute('grass', 'vec4');
+  const runoff = g.z;
+  const dist = length(cameraPosition.sub(positionWorld));
+  const near = smoothstep(160.0, 20.0, dist);
+
+  const grain = mx_noise_float(p.mul(9.0)).mul(0.5).add(0.5);
+  const macro = mx_fractal_noise_float(p.mul(0.004), 3).mul(0.5).add(0.5);
+  const mid = mx_fractal_noise_float(p.mul(0.03), 3).mul(0.5).add(0.5);
+  // hardstanding: dark asphalt, with paler concrete plazas and slab joints here and there
+  let ground = mix(color(0x2c2d31), color(0x3a3b40), grain.mul(0.4).add(mid.mul(0.6)));
+  const plaza = smoothstep(0.58, 0.66, macro);
+  const slabs = fract(p.div(6.0));
+  const joint = step(0.97, max(slabs.x, slabs.y)).mul(near);
+  const concrete = mix(color(0x6c6a66), color(0x7d7b76), grain).mul(float(1).sub(joint.mul(0.35)));
+  ground = mix(ground, concrete, plaza);
+
+  // run-off: 3 m diagonal bands of paint over the asphalt, scuffed and streaked by tyres
+  const band = uv().x.add(abs(uv().y)).div(6.0);
+  const aa = fwidth(band).add(0.001);
+  const b = smoothstep(float(0.5).sub(aa), float(0.5).add(aa), fract(band));
+  let painted = mix(color(paint[0]), color(paint[1]), b);
+  const wear = mx_fractal_noise_float(p.mul(vec2(0.6, 0.6)), 3).mul(0.5).add(0.5);
+  painted = mix(painted, color(0x1f2022), smoothstep(0.62, 0.85, wear).mul(0.55));
+  painted = painted.mul(grain.mul(0.1).add(0.95));
+  m.colorNode = mix(ground, painted, runoff);
+  m.roughnessNode = mix(mix(float(0.88), float(0.8), plaza), float(0.62), runoff).sub(grain.mul(0.06));
+  m.metalnessNode = float(0.0);
+  m.normalNode = bumpMap(grain.mul(near), 0.15);
+
+  if (glow && nightU && floodLit) {
+    // pools of purple and blue light in the plazas and fan zones around the circuit (not on
+    // the run-off, and fading out with the floodlights so the land beyond stays dark)
+    const venue = smoothstep(0.3, 0.75, floodLit);
+    const pool = smoothstep(0.5, 0.7, mx_fractal_noise_float(p.mul(0.012).add(37.0), 2).mul(0.5).add(0.5)).mul(venue);
+    const hue = smoothstep(0.35, 0.65, mx_noise_float(p.mul(0.003).add(11.0)).mul(0.5).add(0.5));
+    const tint = mix(color(glow[0]), color(glow[1]), hue);
+    m.emissiveNode = tint.mul(pool.mul(runoff.oneMinus()).mul(nightU).mul(0.45));
+  }
+  return m;
+}
+
 /** Chequered start/finish line. */
 export function checkerMaterial(cols, rows) {
   const m = new THREE.MeshStandardNodeMaterial();

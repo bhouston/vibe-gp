@@ -413,10 +413,31 @@ out body;`;
   console.log(`== ${c.name}: lap ${L.toFixed(0)} m (official ${c.realLength} m, ${(((L - c.realLength) / c.realLength) * 100).toFixed(1)}%), ` +
     `${best.cyc.length} chains of ${chains.length}, ${count} cycles searched; direction ${dirNote}; start ${startNote}; pit ${pitNote}; ${points.length} control points`);
 
-  writeTrack(id, c, { points, pit: pitOut, geo, corners, wayIds, rels, L });
+  // tunnels: lap stretches on ways tagged tunnel / covered (lap metres from the start line)
+  const lapL = polyLen(lap, true);
+  const tunnels = [];
+  for (const w of loopWays) {
+    const t = w.tags ?? {};
+    if (!['yes', 'building_passage', 'culvert'].includes(t.tunnel) && t.covered !== 'yes') continue;
+    const ss = w.nodes.filter((n) => idxOf.has(n)).map((n) => nearestOn(lap, pos.get(n))).filter((q) => q.d < 15).map((q) => q.s);
+    if (ss.length < 2) continue;
+    let a = Math.min(...ss), b = Math.max(...ss);
+    if (b - a > lapL / 2) [a, b] = [Math.max(...ss.filter((v) => v < lapL / 2)), Math.min(...ss.filter((v) => v >= lapL / 2))].reverse();
+    tunnels.push([a, b]);
+  }
+  tunnels.sort((x, y) => x[0] - y[0]);
+  const merged = [];
+  for (const t of tunnels) {
+    const last = merged[merged.length - 1];
+    if (last && t[0] <= last[1] + 100) last[1] = Math.max(last[1], t[1]); // one tunnel split into pieces
+    else merged.push([...t]);
+  }
+  if (merged.length) console.log(`  tunnels: ${merged.map(([a, b]) => `${a.toFixed(0)}-${b.toFixed(0)} m`).join(', ')}`);
+
+  writeTrack(id, c, { points, pit: pitOut, geo, corners, wayIds, rels, L, tunnels: merged.map(([a, b]) => [Math.round(a), Math.round(b)]) });
 }
 
-function writeTrack(id, c, { points, pit, geo, corners, wayIds, rels }) {
+function writeTrack(id, c, { points, pit, geo, corners, wayIds, rels, tunnels }) {
   const fmt = (arr) => {
     const rows = [];
     for (let k = 0; k < arr.length; k += 8) rows.push('    ' + arr.slice(k, k + 8).map(([x, y]) => `[${x}, ${y}]`).join(', ') + ',');
@@ -431,7 +452,8 @@ ${desc}
 // Reference: OpenStreetMap ${src} ((c) OpenStreetMap contributors, ODbL), chained into the
 // lap, projected to local metres (equirectangular at ${geo.projLat}) with the origin on the start
 // line, lightly smoothed and resampled (denser through corners).
-import elevation from './elevation/${id}.js';
+import elevation from './elevation/${id}.js';${c.city ? `
+import city from './city/${id}.js';` : ''}
 
 export default {
   id: '${id}',
@@ -442,7 +464,12 @@ export default {
   minRadius: ${c.minRadius}, // the tightest real corner (scripts/track-check.mjs accepts down to this)` : ''}
   // projection origin of the points (the start line), for scripts/fetch-elevation.mjs
   geo: { lat: ${geo.lat}, lon: ${geo.lon}, projLat: ${geo.projLat} },
-  elevation, // m above sea level around the lap (real terrain, see the generated file)
+  elevation, // m above sea level around the lap (real terrain, see the generated file)${c.runoff !== undefined ? `
+  runoff: ${c.runoff}, // m between the kerbs and the walls: a street circuit` : ''}${c.city ? `
+  // buildings, coastline, old city walls and piers around the circuit (scripts/fetch-city.mjs)
+  city,` : ''}${tunnels.length ? `
+  // lap metres [from, to] in tunnels (OSM tunnel / covered ways)
+  tunnels: ${JSON.stringify(tunnels).replace(/,/g, ', ')},` : ''}
   // ${c.kerbNote}
   kerb: { colors: [${c.kerb.map(hex).join(', ')}] },
 ${c.night ? `  night: true, // ${c.night}

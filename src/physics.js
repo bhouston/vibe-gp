@@ -510,7 +510,7 @@ export class CarPhysics {
   classifyWheels(i0) {
     const T = this.track, pit = T.pit;
     const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
-    const counts = { asphalt: 0, kerb: 0, grass: 0, gravel: 0, sausage: 0 };
+    const counts = { asphalt: 0, kerb: 0, grass: 0, gravel: 0, sausage: 0, runoff: 0 };
     for (const w of this.wheels) {
       const wx = this.position.x + sin * w.x + cos * w.y;
       const wz = this.position.z + cos * w.x - sin * w.y;
@@ -519,7 +519,7 @@ export class CarPhysics {
       const i = T.wrap(i0 + Math.round(along / T.ds));
       const lat = (wx - T.px[i]) * T.leftX(i) + (wz - T.pz[i]) * T.leftZ(i);
       let s = T.surfaceAt(i, lat);
-      if ((s === 'grass' || s === 'gravel') && pit && this.pitIndex >= 0) {
+      if ((s === 'grass' || s === 'gravel' || s === 'runoff') && pit && this.pitIndex >= 0) {
         const j0 = this.pitIndex;
         const a = (wx - pit.px[j0]) * pit.tx[j0] + (wz - pit.pz[j0]) * pit.tz[j0];
         const j = Math.min(Math.max(j0 + Math.round(a / pit.ds), 0), pit.N - 1);
@@ -531,7 +531,7 @@ export class CarPhysics {
     }
     // the car's overall surface: whatever most wheels are on, the worse one on a tie
     this.surface = counts.gravel >= 2 ? 'gravel' : counts.grass + counts.gravel >= 2 ? 'grass'
-      : counts.sausage >= 1 ? 'sausage' : counts.kerb >= 2 ? 'kerb' : 'asphalt';
+      : counts.sausage >= 1 ? 'sausage' : counts.runoff >= 2 ? 'runoff' : counts.kerb >= 2 ? 'kerb' : 'asphalt';
   }
 
   /** Tread temperature and grass contamination, per wheel. */

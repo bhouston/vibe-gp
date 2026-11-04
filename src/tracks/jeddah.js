@@ -19,7 +19,7 @@ export default {
   // red/white kerbs
   kerb: { colors: [0xd0201c, 0xf2f2f2] },
   night: true, // raced under floodlights
-  scenery: {trees: 0, desert: true},
+  scenery: {trees: 0, paved: true, illuminated: true, city: true, tall: 1.4, sea: 'west'},
   corners: [
 
   ],

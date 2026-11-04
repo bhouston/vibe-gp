@@ -21,7 +21,9 @@ const CELL = 50, BLEND = 150;
 // Per-circuit scenery: tree cover (0..1 share of the land near the track) and how many of the
 // trees are conifers. Imported circuits carry their own `scenery` in the track definition,
 // which can also set palms (palm trees instead of most broadleaves), desert / dunes (ground
-// colour, see grassMaterial), city (blocks of buildings beyond the circuit, see buildCity)
+// colour, see grassMaterial), paved (painted asphalt run-off and paved ground instead of
+// any grass or sand, see pavedMaterial; `paint` = its two colours), illuminated (a brightly
+// lit night circuit, see ILLUMINATED in track.js), city (blocks of buildings beyond the circuit, see buildCity)
 // and tall (building height scale, e.g. the Las Vegas casinos).
 const SCENERY = {
   spa: { trees: 0.62, conifer: 0.7 }, // in the Ardennes forest: spruce and beech
@@ -272,9 +274,10 @@ function foliageMaterial(tipLight, clumpScale) {
 /**
  * Scatter trees outside the circuit: forests where a large-scale noise field says so
  * (more on wooded circuits), thinning out towards forest edges and away from the track,
- * never in a corridor, the pit area or on a grandstand.
+ * never in a corridor, the pit area or on a grandstand (nor where `occupied(x, z)` says a
+ * real building stands; without it, city circuits keep trees out of the procedural blocks).
  */
-export function buildTrees(P, field, stands, group, trackId, scenery) {
+export function buildTrees(P, field, stands, group, trackId, scenery, occupied = null) {
   const sc = { ...DEFAULT_SCENERY, ...(scenery ?? SCENERY[trackId]) };
   if (sc.trees <= 0) return;
   const rand = rng(Math.round(P.length * 7) + 11);
@@ -298,7 +301,7 @@ export function buildTrees(P, field, stands, group, trackId, scenery) {
       if (s.clear < 14 || s.clear === Infinity && !nearTrack(field, jx, jz, REACH)) continue;
       if (s.clear !== Infinity && s.clear > REACH) continue;
       if (onStand(jx, jz)) continue;
-      if (sc.city && cityBlock(jx, jz, s)) continue;
+      if (occupied ? occupied(jx, jz) : sc.city && cityBlock(jx, jz, s)) continue;
       // fewer trees near the edge of the reach, so the woods fade rather than stop
       const dist = s.clear === Infinity ? farDist(field, jx, jz) : s.clear;
       if (rand() > smoothstep(REACH, REACH * 0.6, dist)) continue;
@@ -372,6 +375,27 @@ function nearTrack(field, x, z, reach) {
  * warped street grid leave streets and squares between blocks; nothing within 30 m of the
  * circuit.
  */
+/**
+ * For a seafront circuit with the sea to the `sea` side ('west' or 'east'): is (x, z) on
+ * the landward side of every part of the circuit within 200 m north or south of it?
+ * Past the ends of the circuit, the coast is taken to run on from the nearest end.
+ */
+function seaFilter(P, sea) {
+  const dir = sea === 'west' ? 1 : -1; // landward = +x for a sea to the west
+  const BAND = 50, edge = new Map(); // z band -> the circuit's landward-most x in it
+  for (let i = 0; i < P.N; i++) {
+    const k = Math.floor(P.pz[i] / BAND), v = P.px[i] * dir;
+    if (!(edge.get(k) >= v)) edge.set(k, v);
+  }
+  const keys = [...edge.keys()], lo = Math.min(...keys), hi = Math.max(...keys);
+  return (x, z) => {
+    const k = Math.min(hi, Math.max(lo, Math.floor(z / BAND)));
+    let e = -Infinity;
+    for (let d = -4; d <= 4; d++) if (edge.has(k + d)) e = Math.max(e, edge.get(k + d));
+    return x * dir > e + 30;
+  };
+}
+
 function cityBlock(x, z, s) {
   if (s.clear !== Infinity && s.clear < 30) return false;
   const street = Math.abs(Math.sin(x / 41 + 0.7 * Math.sin(z / 230))) < 0.12 || Math.abs(Math.sin(z / 47 + 0.7 * Math.sin(x / 260))) < 0.12;
@@ -411,6 +435,9 @@ export function buildCity(P, field, stands, group, sc) {
     const a = (x - f.ox) * f.ax + (z - f.oz) * f.az, d = (x - f.ox) * f.dx + (z - f.oz) * f.dz;
     return Math.abs(a) < f.L / 2 + 25 && d > -25 && d < f.depth + 25;
   });
+  // sc.sea ('west' / 'east'): a seafront circuit, buildings only on the landward side of
+  // the whole circuit at each latitude (none between its legs or out on the water side)
+  const landward = sc.sea ? seaFilter(P, sc.sea) : () => true;
   const list = [];
   for (let x = b.minX - REACH; x < b.maxX + REACH; x += step) {
     for (let z = b.minZ - REACH; z < b.maxZ + REACH; z += step) {
@@ -418,7 +445,7 @@ export function buildCity(P, field, stands, group, sc) {
       const s = field.sample(jx, jz);
       if (s.clear !== Infinity && s.clear < 30) continue;
       const dist = s.clear === Infinity ? farDist(field, jx, jz) : s.clear;
-      if (dist > REACH || !cityBlock(jx, jz, s) || onStand(jx, jz)) continue;
+      if (dist > REACH || !cityBlock(jx, jz, s) || onStand(jx, jz) || !landward(jx, jz)) continue;
       // the whole footprint must be clear of the circuit
       const w = 14 + rand() * 14, d = 14 + rand() * 14;
       const yaw = Math.round(rand() * 2) * 0.05;

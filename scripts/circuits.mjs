@@ -85,7 +85,8 @@ export const CIRCUITS = {
     kerbNote: 'red/white kerbs',
     kerb: [RED, WHITE],
     night: 'raced under floodlights', // floodlit night race
-    scenery: { trees: 0.0, desert: true },
+    // no sand anywhere: painted asphalt run-off and paved ground, and lit up like a festival
+    scenery: { trees: 0.0, paved: true, illuminated: true, city: true, tall: 1.4, sea: 'west' },
     // No published figure (nearly flat, up to ~8 m). Mapzen has ±3 m noise and a ~10 m dip (sea
     // pixels by the shore) before T13: a 200 m median drops it, a ±2 m band leaves gentle grades.
     elevation: { dataset: 'mapzen', label: 'Mapzen terrain tiles', median: 200, tol: 2, maxRange: 8 },
@@ -106,6 +107,8 @@ export const CIRCUITS = {
     name: 'Circuit de Monaco', country: 'Monaco', realLength: 3337, dir: 'cw',
     // narrow streets; the Grand Hotel hairpin is about 10 m radius and its two legs ~18 m apart
     width: 10, minRadius: 9,
+    // a street circuit: walls close to the kerbs; the city around it from scripts/fetch-city.mjs
+    runoff: 2, city: true,
     center: [43.7362, 7.4243], relation: 148194, radius: 1500,
     start: [43.7350269, 7.4212652], // OSM node 4937755860 raceway=start-finish
     corners: [
@@ -120,7 +123,7 @@ export const CIRCUITS = {
       Noghes.`,
     kerbNote: 'red/white kerbs',
     kerb: [RED, WHITE],
-    scenery: { trees: 0.08, conifer: 0.2, city: true },
+    scenery: { trees: 0.08, conifer: 0.2, city: true, sea: 0 }, // sea: water level (m above sea level), the Mediterranean
     // F1: 42 m, highest at Casino, lowest before Rascasse. The DEM includes buildings (the tunnel runs
     // under the Fairmont hotel): a median filter drops the spikes. From Portier to the Nouvelle Chicane
     // the DEM has the sea, the hotel and the hillside above the tunnel, and at Rascasse-Anthony Noghes
@@ -212,6 +215,8 @@ export const CIRCUITS = {
   },
   baku: {
     name: 'Baku City Circuit', country: 'Azerbaijan', realLength: 6003, dir: 'ccw', width: 12,
+    // a street circuit: walls close to the kerbs; the city around it from scripts/fetch-city.mjs
+    runoff: 3, city: true,
     center: [40.3685, 49.8433], relation: 11266687, radius: 2500,
     // OSM node 13826310747 name="Finish Line" (not tagged raceway=finish)
     start: [40.3721915, 49.8517072],
@@ -220,7 +225,7 @@ export const CIRCUITS = {
       seafront boulevard to the start line.`,
     kerbNote: 'red/white kerbs',
     kerb: [RED, WHITE],
-    scenery: { trees: 0.06, conifer: 0.1, city: true },
+    scenery: { trees: 0.06, conifer: 0.1, city: true, sea: -28 }, // the Caspian is 28 m below sea level
     elevation: { dataset: 'mapzen', label: 'Mapzen terrain tiles', median: 100, tol: 2, smooth: 40, range: 26.8 },
   },
   singapore: {
