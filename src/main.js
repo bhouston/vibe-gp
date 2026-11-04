@@ -2,11 +2,11 @@ import * as THREE from 'three/webgpu';
 import { Track } from './track.js';
 import { TRACKS } from './tracks/index.js';
 import { TrackPath } from './trackPath.js';
-import { Car, MIRROR_LAYER } from './car.js';
+import { Car, MIRROR_LAYER, PARKED } from './car.js';
 import { CarPhysics } from './physics.js';
 import { Input } from './input.js';
 import { CameraRig } from './camera.js';
-import { LapTimer, formatTime } from './race.js';
+import { LapTimer, StartLights, formatTime } from './race.js';
 import { Hud } from './hud.js';
 import { Settings } from './settings.js';
 import { skyNode, nightSkyNode } from './materials.js';
@@ -158,6 +158,7 @@ async function start() {
   const input = new Input();
   const rig = new CameraRig(camera);
   const timer = new LapTimer();
+  const startLights = new StartLights();
   const hud = new Hud();
   const pitStop = new PitStop();
   const boxMarker = new BoxMarker(); // big green arrow in the pit lane beside the player's box
@@ -167,6 +168,7 @@ async function start() {
   let physics = null;
   let car = null;
   let crews = null;
+  let showroom = null; // the ground under the car in the menu, until the first track loads
 
   // tyre compound for the next stop: keys 1-3 in the race, or click the HUD tyres
   const pickCompound = (c) => {
@@ -262,7 +264,7 @@ async function start() {
     }
     car = new Car(team);
     scene.add(car.group, car.debris);
-    if (physics) car.update(physics, 0);
+    car.update(physics ?? PARKED, 0);
     saveTeam(team.id);
     setUrlParams({ team: team.id });
     hud.setTeam(team);
@@ -291,6 +293,13 @@ async function start() {
       built.dispose(); // another track was picked meanwhile
       return;
     }
+    if (showroom) {
+      scene.remove(showroom);
+      showroom.geometry.dispose();
+      showroom.material.dispose();
+      showroom = null;
+      document.getElementById('menu').classList.remove('showroom');
+    }
     track = built;
     crews = new PitCrews(track.path.pit);
     scene.add(track.group, crews.group);
@@ -306,6 +315,7 @@ async function start() {
     rig.track = track.path;
     rig.initialised = false;
     timer.reset();
+    startLights.reset(track.startLamps);
     timer.best = loadBest(def.id);
     hud.setTrack(track.path, def);
     syncBox();
@@ -337,6 +347,7 @@ async function start() {
     const best = timer.best;
     timer.reset();
     timer.best = best;
+    startLights.reset(track.startLamps);
     pitStop.reset();
     car.clearDebris();
     rig.initialised = false;
@@ -358,13 +369,20 @@ async function start() {
   };
   // ?track=<id> skips the menu and starts that race directly (team comes from ?team=)
   const urlTrack = TRACKS.find((t) => t.id === new URLSearchParams(location.search).get('track'));
-  // (the track cards' outlines are worked out after the first load, only once the menu shows)
   if (urlTrack) {
     loadTrack(urlTrack);
     menu.hide();
   } else {
+    // no circuit is built until one is picked: the car alone on a plain ground under the day
+    // sky, the ground wide enough for the haze to melt its edge into the horizon
+    showroom = new THREE.Mesh(new THREE.CircleGeometry(3000, 64), new THREE.MeshStandardNodeMaterial({ color: 0x5c6066, roughness: 0.9 }));
+    showroom.rotation.x = -Math.PI / 2;
+    showroom.receiveShadow = true;
+    scene.add(showroom);
+    setAtmosphere(false);
+    sun.position.set(keyDir[0] * 100, keyDir[1] * 100, keyDir[2] * 100);
+    document.getElementById('menu').classList.add('showroom');
     showMenu();
-    loadTrack(TRACKS[0]).then(() => menu.fillTrackCards()); // something to look at behind the menu
   }
 
   addEventListener('resize', () => {
@@ -383,7 +401,16 @@ async function start() {
     const now = performance.now();
     const dt = Math.min((now - last) / 1000, 0.1);
     last = now;
-    if (!track || compiling) return; // a track is loading behind the loading screen
+    if (compiling) return; // a track is loading behind the loading screen
+    if (!track) {
+      menu.handleKeys(input);
+      input.endFrame();
+      orbit += dt * 0.3;
+      camera.position.set(Math.cos(orbit) * 9.5, 3, Math.sin(orbit) * 9.5);
+      camera.lookAt(0, -3, 0); // below the car: it sits in the gap above the menu cards
+      renderer.render(scene, camera);
+      return;
+    }
 
     if (menu.visible) {
       menu.handleKeys(input);
@@ -408,7 +435,9 @@ async function start() {
       acc += dt;
       const controls = input.state;
       while (acc >= FIXED) {
-        physics.step(pitStop.update(physics, controls, FIXED), FIXED);
+        startLights.update(FIXED);
+        const held = pitStop.update(physics, controls, FIXED);
+        physics.step(startLights.holding ? { ...held, hold: true } : held, FIXED);
         damageFlash();
         if (pitStop.released) timer.flash = { text: `PIT STOP ${pitStop.lastStop.toFixed(1)} s`, until: timer.time + 2.5 };
         const prevBest = timer.best;
@@ -435,7 +464,7 @@ async function start() {
     hud.update(physics, timer, rig.mode, pitStop);
     sound.update(physics, { camera, mode: rig.mode, racing: !menu.visible });
     if (import.meta.env.DEV) {
-      window.__game = { physics, timer, track, pitStop, crews, loadTrack, TRACKS, menu, car, setTeam, TEAMS, scene, sun, floods, renderer, sound };
+      window.__game = { physics, timer, startLights, track, pitStop, crews, loadTrack, TRACKS, menu, car, setTeam, TEAMS, scene, sun, floods, renderer, sound };
       // automated screenshots can pin the camera: window.__fixedCam = { x, y, z, tx, ty, tz }
       const fc = window.__fixedCam;
       if (fc) {
@@ -560,7 +589,7 @@ class Menu {
   show(currentId) {
     const i = this.tracks.findIndex((t) => t.id === currentId);
     if (i >= 0) this.focus('track', i);
-    if (currentId) this.fillTrackCards(); // (at startup: after the first load instead)
+    this.fillTrackCards();
     this.setStep('team');
     this.el.hidden = false;
     document.getElementById('hud').classList.add('menu-open');

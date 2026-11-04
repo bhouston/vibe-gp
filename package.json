@@ -6,12 +6,15 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy": "cf deploy"
   },
   "dependencies": {
     "three": "^0.187.0"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "2.0.0-beta.v.11",
+    "cf": "1.0.0-beta.27",
     "vite": "^8.3.5"
   }
 }

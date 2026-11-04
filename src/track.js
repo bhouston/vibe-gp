@@ -600,9 +600,11 @@ export class Track {
     beam.position.set((xl + xr) / 2, postH - 0.3, 0);
     beam.castShadow = true;
     g.add(beam);
-    const lightMat = new THREE.MeshStandardNodeMaterial({ color: 0x220000, emissive: 0xff1a1a, emissiveIntensity: 0.4 });
+    this.startLamps = []; // one material per lamp: StartLights (race.js) switches them
     for (let i = 0; i < 5; i++) {
-      const pod = new THREE.Mesh(boxGeometry(0.7, 0.7, 0.2), lightMat);
+      const lamp = new THREE.MeshStandardNodeMaterial({ color: 0x220000, emissive: 0x000000 });
+      this.startLamps.push(lamp);
+      const pod = new THREE.Mesh(boxGeometry(0.7, 0.7, 0.2), lamp);
       pod.position.set(-2.4 + i * 1.2, postH - 0.3, -0.5); // facing cars approaching from -Z
       g.add(pod);
     }

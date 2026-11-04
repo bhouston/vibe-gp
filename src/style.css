@@ -289,6 +289,10 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
   overflow-y: auto;
 }
 #menu[hidden] { display: none; }
+/* before the first track: the car stands in the clear gap between the title and the cards */
+#menu.showroom:has(#step-team:not([hidden])) { background: linear-gradient(to bottom, transparent 35%, rgba(8, 10, 16, 0.88) 60%); }
+#menu.showroom:has(#step-team:not([hidden])) h1 { margin-bottom: auto; }
+#menu.showroom:has(#step-track:not([hidden])) { background: #080a10; }
 #menu h1 { margin: 0; font-size: 56px; font-weight: 900; letter-spacing: 0.08em; font-style: italic; }
 #menu h1 span { color: #e10600; }
 #menu .sub { margin: 14px 0 6px; color: #9aa3b5; letter-spacing: 0.25em; text-transform: uppercase; font-size: 13px; }

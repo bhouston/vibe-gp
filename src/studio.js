@@ -6,7 +6,7 @@
 // Sets window.__studio = { ready, renderer, adapter } once the frame is drawn
 // (scripts/car-shot.mjs waits for it to take screenshots).
 import * as THREE from 'three/webgpu';
-import { Car, MIRROR_LAYER } from './car.js';
+import { Car, MIRROR_LAYER, PARKED } from './car.js';
 import { TEAMS, teamById } from './teams.js';
 import { skyNode } from './materials.js';
 
@@ -67,7 +67,7 @@ async function main() {
 
   const car = new Car(team);
   scene.add(car.group);
-  car.update({ position: { x: 0, z: 0 }, height: 0, yaw: 0, steerAngle: 0, speed: 0, pitch: 0, roll: 0, heave: 0 }, 0);
+  car.update(PARKED, 0);
 
   const names = view === 'grid' ? GRID : [view];
   const cols = names.length > 1 ? 3 : 1, rows = Math.ceil(names.length / cols);
