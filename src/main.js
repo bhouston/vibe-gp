@@ -1,7 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { Track } from './track.js';
 import { TRACKS } from './tracks/index.js';
-import { TrackPath } from './trackPath.js';
 import { Car, MIRROR_LAYER, PARKED } from './car.js';
 import { CarPhysics } from './physics.js';
 import { Input } from './input.js';
@@ -15,6 +14,7 @@ import { skyNode, nightSkyNode } from './materials.js';
 import { setFloodMask, nightU, FloodlightPool } from './night.js';
 import { setLandMaps } from './land.js';
 import { LoadingBar, nextFrame } from './loading.js';
+import { CARDS } from './tracks/cards.js';
 import { TEAMS, teamById, teamLogoCanvas, teamGarage } from './teams.js';
 import { BoxMarker } from './boxMarker.js';
 import { PitStop } from './pitStop.js';
@@ -519,19 +519,23 @@ class Menu {
           .map((c) => `<i style="background:${c}"></i>`).join('')}</div>`;
       card.prepend(teamLogoCanvas(t));
       card.addEventListener('click', () => this.pickTeam(i));
-      card.addEventListener('mouseenter', () => this.focus('team', i));
+      // mouse only: iOS fires hover events on a tap, and a change there can swallow the tap
+      card.addEventListener('pointerenter', (e) => e.pointerType === 'mouse' && this.focus('team', i));
       this.rows.team.appendChild(card);
       return card;
     });
 
-    // the outline and lap length need each circuit's full path: fillTrackCards, later
     this.trackCards = tracks.map((def, i) => {
       const card = document.createElement('button');
       card.className = 'track-card';
+      const c = CARDS[def.id]; // src/tracks/cards.js: `pnpm cards` after adding a track
       card.innerHTML = `
-        <svg preserveAspectRatio="xMidYMid meet"></svg>
+        <svg preserveAspectRatio="xMidYMid meet" viewBox="${c?.viewBox ?? ''}">
+          <path d="${c?.d ?? ''}" fill="none" stroke="currentColor" stroke-width="${c?.stroke}" stroke-linejoin="round"/>
+          ${c ? `<circle cx="${c.start[0]}" cy="${c.start[1]}" r="${c.stroke * 1.1}" fill="#e10600"/>` : ''}
+        </svg>
         <div class="track-name">${def.name}${def.night ? ' <span class="night-tag">Night</span>' : ''}</div>
-        <div class="track-meta">${def.country}</div>
+        <div class="track-meta">${def.country}${c ? ` · ${c.km} km` : ''}${c?.elevation ? ` · ${c.elevation} m elevation change` : ''}</div>
         <div class="track-best">Best <span>${formatTime(loadBest(def.id))}</span></div>`;
       card.addEventListener('click', () => this.focus('track', i));
       card.addEventListener('dblclick', () => this.go());
@@ -552,26 +556,6 @@ class Menu {
     this.focus('team', this.selectedTeam);
     this.markTeam();
     this.setStep('team');
-  }
-
-  /** Draw each circuit's outline and lap length on its card, one card per frame. */
-  async fillTrackCards() {
-    if (this.filled) return;
-    this.filled = true;
-    for (const [i, def] of this.tracks.entries()) {
-      await nextFrame();
-      const path = new TrackPath(def);
-      const b = path.bounds();
-      const pad = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) * 0.08;
-      const sw = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) / 45;
-      const start = path.poseAt(0);
-      const card = this.trackCards[i], svg = card.querySelector('svg');
-      svg.setAttribute('viewBox', `${b.minX - pad} ${b.minZ - pad} ${b.maxX - b.minX + pad * 2} ${b.maxZ - b.minZ + pad * 2}`);
-      svg.innerHTML = `
-        <path d="${path.svgPath(3)}" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linejoin="round"/>
-        <circle cx="${start.x}" cy="${start.z}" r="${sw * 1.1}" fill="#e10600"/>`;
-      card.querySelector('.track-meta').textContent = `${def.country} · ${(path.length / 1000).toFixed(3)} km${path.elevationRange >= 1 ? ` · ${path.elevationRange.toFixed(0)} m elevation change` : ''}`;
-    }
   }
 
   /** Show one step of the menu: 'team' (pick a car) or 'track' (pick a circuit, then GO). */
@@ -597,7 +581,6 @@ class Menu {
   show(currentId) {
     const i = this.tracks.findIndex((t) => t.id === currentId);
     if (i >= 0) this.focus('track', i);
-    this.fillTrackCards();
     this.setStep('team');
     this.el.hidden = false;
     document.getElementById('hud').classList.add('menu-open');
@@ -621,7 +604,8 @@ class Menu {
     this.selectedTeam = (i + this.teams.length) % this.teams.length;
     this.focus('team', this.selectedTeam);
     this.markTeam();
-    this.onTeam(this.teams[this.selectedTeam]);
+    // build the car after the highlight has painted, so the tap answers straight away
+    nextFrame().then(() => this.onTeam(this.teams[this.selectedTeam]));
   }
 
   markTeam() {

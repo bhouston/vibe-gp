@@ -2,6 +2,8 @@
 
 A small F1-style racing game built with [three.js](https://threejs.org/) using `WebGPURenderer` and node-based (TSL) materials. All track and car geometry is built by hand in code, and all surface detail is procedural (no textures or models).
 
+**Play it at [vibe-gp.ben3d.ca](https://vibe-gp.ben3d.ca).**
+
 ## Running
 
 ```sh
@@ -66,6 +68,8 @@ The gear in the top-right corner opens **Settings**: traction control (traction,
 
 ## Adding a track
 
+After adding or changing a track, run `pnpm cards` to regenerate its menu card (`src/tracks/cards.js`).
+
 Real circuits: add an entry to `scripts/circuits.mjs`, register the id in `src/tracks/index.js`, then
 
 ```sh
@@ -129,3 +133,12 @@ Grip comes from a tyre model rather than fixed grip numbers, so each of the four
 
 Measured in the model: about 2 g in slow corners, about 4.5 g at 230 km/h, 0–100 km/h in 2.5 s, 300–0 km/h in 85 m (peak deceleration about 7 g), and a 324 km/h top speed. Grip and braking are tuned above real F1 figures (about 5 g peak cornering, 300–0 km/h in about 4 s) to make the car more responsive.
 
+## Credits
+
+- Circuit centrelines, pit lanes and surrounding land: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, available under the [Open Database License](https://opendatacommons.org/licenses/odbl/).
+- Circuit elevation: Mapzen terrain tiles, EU-DEM 25 m and USGS 3DEP / NED 10 m, looked up through the [OpenTopoData](https://www.opentopodata.org) API; Environment Agency LiDAR Composite DTM 1 m (© Environment Agency); NRCan HRDEM Mosaic DTM (Open Government Licence - Canada).
+- Rendering: [three.js](https://threejs.org/).
+
+## Disclaimer
+
+Vibe GP is an unofficial, non-commercial fan project. It is not affiliated with, endorsed by, sponsored by or otherwise connected to Formula 1, the FIA, or any team, driver, car maker, sponsor, circuit or other brand mentioned in this project or shown in the game. All names and trademarks belong to their respective owners and are used only to identify them. Team and sponsor logos in the game are hand-drawn stand-ins, not official artwork.
