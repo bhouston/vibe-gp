@@ -63,18 +63,21 @@ async function start() {
   const scene = new THREE.Scene();
   scene.backgroundNode = skyNode(SUN_DIR);
   scene.fog = new THREE.Fog(0xc4d8e6, 300, 1600);
-  // prefiltered sky as the environment, so glossy paint and clearcoat reflect the sky
+  // Image-based lighting: the prefiltered sky dome is the main light for every surface
+  // (diffuse irradiance + glossy reflections). The sun disc is left out of the environment;
+  // the directional light below supplies it instead, so it can cast shadows without being
+  // counted twice.
   const envScene = new THREE.Scene();
-  envScene.backgroundNode = skyNode(SUN_DIR);
+  envScene.backgroundNode = skyNode(SUN_DIR, { sunDisc: false });
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(envScene, 0.02).texture;
-  scene.environmentIntensity = 0.55;
+  scene.environment = pmrem.fromScene(envScene, 0.0, 0.1, 100, { size: 512 }).texture;
+  scene.environmentIntensity = 1.0;
+  pmrem.dispose();
 
   const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 4000);
   camera.layers.enable(MIRROR_LAYER); // mirror glass is only drawn by the main view
 
-  scene.add(new THREE.HemisphereLight(0xcfe6ff, 0x4a5a3a, 0.75));
-  const sun = new THREE.DirectionalLight(0xfff2dd, 3.2);
+  const sun = new THREE.DirectionalLight(0xfff2dd, 2.2);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   const sc = sun.shadow.camera;
@@ -199,7 +202,7 @@ async function start() {
 
     hud.update(physics, timer, rig.mode);
     if (import.meta.env.DEV) {
-      window.__game = { physics, timer, track, loadTrack, TRACKS, menu, car, setTeam, TEAMS };
+      window.__game = { physics, timer, track, loadTrack, TRACKS, menu, car, setTeam, TEAMS, scene, sun };
       // automated screenshots can pin the camera: window.__fixedCam = { x, y, z, tx, ty, tz }
       const fc = window.__fixedCam;
       if (fc) {

@@ -197,14 +197,18 @@ export function simpleMaterial(hex, roughness = 0.6, metalness = 0) {
   return m;
 }
 
-/** Sky gradient + sun glow, used as scene.backgroundNode. */
-export function skyNode(sunDir) {
+/**
+ * Sky gradient + sun glow, used as scene.backgroundNode and (prefiltered) as the IBL environment.
+ * `sunDisc: false` drops the bright disc so a directional light can stand in for it.
+ */
+export function skyNode(sunDir, { sunDisc = true } = {}) {
   const d = positionWorldDirection;
   const h = max(d.y, 0.0);
   const horizon = color(0xcfe3f2), zenith = color(0x3a76c4);
   let sky = mix(horizon, zenith, h.pow(0.55));
   const sun = max(d.dot(vec3(...sunDir).normalize()), 0.0);
-  sky = sky.add(color(0xfff1d0).mul(sun.pow(400.0).mul(2.0).add(sun.pow(12.0).mul(0.25))));
+  const disc = sunDisc ? sun.pow(400.0).mul(2.0) : float(0.0);
+  sky = sky.add(color(0xfff1d0).mul(disc.add(sun.pow(12.0).mul(0.25))));
   // below horizon fades to a hazy ground colour
   const below = smoothstep(0.0, -0.08, d.y);
   return mix(sky, color(0x8fa38a), below);
