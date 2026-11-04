@@ -12,7 +12,8 @@ import { applyDecals } from './decals.js';
 import {
   liveryMaterial, paintMaterial, carbonMaterial, tyreMaterial, rimMaterial, simpleMaterial, wheelCoverMaterial,
 } from './materials.js';
-import { color, texture, uv, vec2, vec3, smoothstep } from 'three/tsl';
+import { color, texture, uv, vec2, vec3, smoothstep, uniform } from 'three/tsl';
+import { DAMAGE } from './damage.js';
 
 /** Layer holding the mirror glass: the main camera must enable it, mirror cameras don't. */
 export const MIRROR_LAYER = 1;
@@ -38,6 +39,14 @@ export const CAR_DIMS = {
   rearWidth: 0.4,
 };
 
+// Front wing: each half hinges off the centre section where it would bend in a hit.
+const FRONT_WING = { span: 0.975, hinge: 0.3, pivotY: 0.1, pivotZ: 2.62, centreY: 0.13 };
+const ENDPLATE_OFF = 0.4; // wing damage at which that side's endplate is knocked off
+const MAX_DEBRIS = 24;
+const REAR_WING_PIVOT = [0, 0.95, -2.45]; // where the rear wing sits on its swan necks
+const FLOOR_EDGE_OFF = 0.6; // floor damage at which the floor-edge wing tears off
+const SMOKE = { count: 36, life: 1.6, at: [0, 0.5, -2.35] }; // engine smoke puffs (car frame emitter)
+
 export class Car {
   /** @param team an entry from TEAMS (src/teams.js) */
   constructor(team) {
@@ -45,6 +54,10 @@ export class Car {
     this.group = new THREE.Group(); // world transform (position + yaw)
     this.body = new THREE.Group(); // sprung mass (pitch/roll)
     this.group.add(this.body);
+    // world-space things that belong to this car but aren't on it: broken-off wing parts
+    // lying on the track, and the wings the pit crew is carrying (add to the scene too)
+    this.debris = new THREE.Group();
+    this.pieces = [];
 
     const carbon = carbonMaterial();
     const black = simpleMaterial(0x0b0b0c, 0.5);
@@ -71,7 +84,8 @@ export class Car {
 
     this.add(this.body, this.monocoque(), livery('monocoque'));
     const sidepodMat = livery('sidepod');
-    for (const side of [-1, 1]) this.add(this.body, this.sidepod(side), sidepodMat);
+    // index 0 = left (+x), 1 = right, like the damage model; each crumples on its own
+    this.sidepods = [1, -1].map((side) => [this.add(this.body, this.sidepod(side), sidepodMat)]);
     this.add(this.body, this.engineCover(), livery('engine'));
     this.add(this.body, this.sharkFin(), livery('fin'));
     this.intakes(black);
@@ -91,6 +105,13 @@ export class Car {
       }
     });
     for (const m of this.mirrors) m.glass.castShadow = m.glass.receiveShadow = false;
+
+    this.buildSmoke();
+
+    // pit crew props: a pristine spare wing, and a copy of the removed one (made per stop)
+    this.spareWing = this.wingProp();
+    this.oldWing = null;
+    this.oldWingStop = -1;
   }
 
   add(parent, geo, mat, pos, rot) {
@@ -168,7 +189,7 @@ export class Car {
   intakes(black) {
     for (const side of [-1, 1]) {
       const ring = (z, k) => podSection(0.16 * k, 0.26 * k, 20, 3.4, 0.45 * side, 0.5, side, 0).map(([x, y]) => [x, y, z]);
-      this.add(this.body, ringLoft([ring(0.672, 1), ring(0.64, 0.9)]), black);
+      this.sidepods[side > 0 ? 0 : 1].push(this.add(this.body, ringLoft([ring(0.672, 1), ring(0.64, 0.9)]), black));
     }
     const mouth = (z, k) => roundedSection(0.16 * k, 0.14 * k, 16, 2.2, 0.965).map(([x, y]) => [x, y, z]);
     this.add(this.body, ringLoft([mouth(-0.152, 1), mouth(-0.2, 0.85)]), black);
@@ -184,9 +205,10 @@ export class Car {
     ];
     const outline = [...half, ...half.map(([x, z]) => [-x, z]).reverse()];
     this.add(b, plateGeometry(outline, 0.02, 'y', 0.075), carbon);
-    for (const s of [-1, 1]) {
-      // floor-edge wing curling up along the outer edge
-      this.add(b, plateGeometry([[0.9, 0.065], [-0.6, 0.065], [-0.62, 0.115], [0.9, 0.095]], 0.01, 'x', s * 0.845), carbon);
+    this.floorEdges = [];
+    for (const s of [1, -1]) {
+      // floor-edge wing curling up along the outer edge (tears off when the floor is damaged)
+      this.floorEdges.push(this.add(b, plateGeometry([[0.9, 0.065], [-0.6, 0.065], [-0.62, 0.115], [0.9, 0.095]], 0.01, 'x', s * 0.845), carbon));
       // fences under the leading edge of the floor
       for (const x of [0.36, 0.46, 0.56]) {
         this.add(b, plateGeometry([[1.18, 0.075], [0.55, 0.075], [0.55, 0.025], [1.08, 0.035]], 0.008, 'x', s * x), carbon);
@@ -211,9 +233,30 @@ export class Car {
   }
 
   frontWing(carbon, wings) {
-    const b = this.body;
-    const span = 0.975;
-    const xs = Array.from({ length: 25 }, (_, i) => -span + (2 * span * i) / 24);
+    const F = FRONT_WING;
+    const span = F.span;
+    const fw = new THREE.Group();
+    this.body.add(fw);
+    this.frontWingGroup = fw;
+    // centre section (the neutral section under the nose) and two outer halves, each on
+    // a pivot at the hinge line so damage can bend it back and down
+    const centre = new THREE.Group();
+    fw.add(centre);
+    this.wingSides = [1, -1].map((sx) => {
+      const pivot = new THREE.Group();
+      pivot.position.set(sx * F.hinge, F.pivotY, F.pivotZ);
+      const inner = new THREE.Group();
+      inner.position.set(-sx * F.hinge, -F.pivotY, -F.pivotZ);
+      pivot.add(inner);
+      fw.add(pivot);
+      return { sx, pivot, inner, endplate: null, broken: false, endplateOff: false };
+    });
+    const stations = (a, b, n) => Array.from({ length: n + 1 }, (_, i) => a + ((b - a) * i) / n);
+    const parts = [
+      [centre, stations(-F.hinge, F.hinge, 8)],
+      [this.wingSides[0].inner, stations(F.hinge, span, 10)],
+      [this.wingSides[1].inner, stations(-span, -F.hinge, 10)],
+    ];
     // 0 inboard (neutral section under the nose) -> 1 at the endplate
     const t = (x) => {
       const k = Math.min(Math.max((Math.abs(x) - 0.22) / 0.7, 0), 1);
@@ -225,21 +268,252 @@ export class Car {
       [wings.frontFlaps, (x) => ({ z: 2.47 - t(x) * 0.01, y: 0.16 + t(x) * 0.07, chord: 0.14, thick: 0.018, angle: 0.3 + t(x) * 0.2 })],
       [wings.frontTop, (x) => ({ z: 2.37 - t(x) * 0.02, y: 0.195 + t(x) * 0.1, chord: 0.11, thick: 0.016, angle: 0.42 + t(x) * 0.25 })],
     ];
-    for (const [mat, fn] of els) this.add(b, this.wingElement(xs, fn), mat);
+    for (const [parent, xs] of parts) for (const [mat, fn] of els) this.add(parent, this.wingElement(xs, fn), mat);
     const endplate = [[2.98, 0.04], [2.3, 0.04], [2.28, 0.26], [2.34, 0.36], [2.5, 0.35], [2.74, 0.2], [2.98, 0.12]];
-    for (const s of [-1, 1]) this.add(b, plateGeometry(endplate, 0.014, 'x', s * (span + 0.008)), wings.frontEndplate);
+    for (const side of this.wingSides) {
+      side.endplate = this.add(side.inner, plateGeometry(endplate, 0.014, 'x', side.sx * (span + 0.008)), wings.frontEndplate);
+    }
+  }
+
+  /**
+   * Pose the front wing for its damage (damage.wing[0 left, 1 right], 0..1). mode:
+   * 'car' as damaged, 'off' removed by the crew, 'new' a fresh wing just fitted.
+   * Parts that break off in a crash fly off as debris (state: the physics, for speed).
+   */
+  setWing(damage, mode, state) {
+    this.frontWingGroup.visible = mode !== 'off';
+    for (let i = 0; i < 2; i++) {
+      const side = this.wingSides[i];
+      const d = mode === 'new' ? 0 : damage.wing[i];
+      const broken = d >= DAMAGE.wingBreak, endplateOff = d >= ENDPLATE_OFF;
+      // crash damage (not the crew taking the wing off): the lost part flies away
+      if (mode === 'car' && state) {
+        if (broken && !side.broken) this.spawnDebris(side.pivot, state, side.sx);
+        else if (endplateOff && !side.endplateOff) this.spawnDebris(side.endplate, state, side.sx);
+      }
+      side.broken = broken;
+      side.endplateOff = endplateOff;
+      side.pivot.visible = !broken;
+      side.endplate.visible = !endplateOff;
+      // bent: swept back, drooping and twisted a little more the harder it was hit
+      const k = Math.min(1, Math.max(0, (d - 0.08) / (DAMAGE.wingBreak - 0.08)));
+      side.pivot.rotation.set(k * 0.12, side.sx * k * 0.22, -side.sx * k * 0.06);
+    }
+  }
+
+  /**
+   * Show the rest of the car's damage (see damage.js): rear wing, sidepods, floor edges,
+   * mirrors, suspension, and smoke from a hurt engine. Parts that break off fly away as
+   * debris (state: the physics, for the car's speed). Call after update().
+   */
+  setDamage(damage, state, dt) {
+    // rear wing: folds back and twists, then snaps off
+    const rw = damage.rearWing;
+    const rwBroken = damage.rearWingBroken;
+    if (rwBroken && !this.rearWingBroken && state) this.spawnDebris(this.rearWingPivot, state, 0);
+    this.rearWingBroken = rwBroken;
+    this.rearWingPivot.visible = !rwBroken;
+    const kr = Math.min(1, rw / DAMAGE.rearWingBreak);
+    this.rearWingPivot.rotation.set(-kr * 0.4, 0, kr * 0.12);
+    for (let i = 0; i < 2; i++) {
+      const sx = i === 0 ? 1 : -1;
+      // sidepod: crushed in towards the chassis and down
+      const d = damage.sidepod[i];
+      for (const m of this.sidepods[i]) {
+        m.scale.set(1 - 0.3 * d, 1 - 0.15 * d, 1 - 0.05 * d);
+        m.rotation.z = sx * 0.06 * d;
+      }
+      // floor edge: tears off
+      const edge = this.floorEdges[i];
+      const off = damage.floor[i] >= FLOOR_EDGE_OFF;
+      if (off && edge.visible && state) this.spawnDebris(edge, state, sx);
+      edge.visible = !off;
+      // mirror: knocked off
+      const m = this.mirrors[i];
+      const gone = damage.mirror[i] >= 1;
+      if (gone && !m.broken && state) this.spawnDebris(m.group, state, sx);
+      m.broken = gone;
+      m.group.visible = !gone;
+    }
+    // suspension: toe-out (as in the physics), camber and sag
+    this.wheels.forEach((w, i) => {
+      const d = damage.suspension[i];
+      w.toe = w.sx * DAMAGE.suspToe * d * 2; // a little exaggerated so it can be seen
+      w.camber = w.sx * DAMAGE.suspCamber * d;
+      w.drop = 0.05 * d;
+    });
+    this.updateSmoke(Math.min(1, Math.max(0, (damage.engine - 0.25) / 0.6)), state, dt);
+  }
+
+  /** Smoke puffs for a damaged engine: sprites in world space, each with its own fade. */
+  buildSmoke() {
+    this.smoke = [];
+    this.smokeNext = 0;
+    this.smokeAcc = 0;
+    for (let k = 0; k < SMOKE.count; k++) {
+      const mat = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false });
+      const alpha = uniform(0);
+      const shade = uniform(0.3);
+      const d = uv().sub(0.5).length();
+      mat.colorNode = vec3(shade, shade, shade.add(0.02));
+      mat.opacityNode = alpha.mul(smoothstep(0.5, 0.1, d));
+      const sprite = new THREE.Sprite(mat);
+      sprite.visible = false;
+      sprite.castShadow = false;
+      this.debris.add(sprite);
+      this.smoke.push({ sprite, alpha, shade, age: Infinity, v: new THREE.Vector3(), grow: 1 });
+    }
+  }
+
+  /** Emit (intensity 0..1) and age the smoke puffs. */
+  updateSmoke(intensity, state, dt) {
+    if (intensity > 0 && state && dt > 0) {
+      this.smokeAcc += dt * (6 + 24 * intensity);
+      const at = new THREE.Vector3();
+      while (this.smokeAcc >= 1) {
+        this.smokeAcc -= 1;
+        const p = this.smoke[this.smokeNext];
+        this.smokeNext = (this.smokeNext + 1) % this.smoke.length;
+        this.group.localToWorld(at.set(...SMOKE.at));
+        p.sprite.position.copy(at);
+        // left behind by the car, rising and spreading
+        p.v.set(state.vel.x * 0.15 + (Math.random() - 0.5), 1 + Math.random() * 0.8, state.vel.z * 0.15 + (Math.random() - 0.5));
+        p.age = 0;
+        p.grow = 0.8 + intensity * 1.6;
+        p.peak = 0.25 + 0.45 * intensity;
+        p.shade.value = 0.42 - 0.3 * intensity; // grey wisps, thick black smoke when it's bad
+        p.sprite.visible = true;
+      }
+    }
+    for (const p of this.smoke) {
+      if (p.age === Infinity) continue;
+      p.age += dt;
+      const t = p.age / SMOKE.life;
+      if (t >= 1) {
+        p.age = Infinity;
+        p.sprite.visible = false;
+        continue;
+      }
+      p.sprite.position.addScaledVector(p.v, dt);
+      p.v.multiplyScalar(Math.exp(-1.5 * dt));
+      p.sprite.scale.setScalar(0.35 + p.grow * t);
+      p.alpha.value = p.peak * Math.min(1, t * 6) * (1 - t);
+    }
+  }
+
+  /** A copy of the current front wing (as damaged) on its own, centred on its origin. */
+  wingProp() {
+    const F = FRONT_WING;
+    const prop = new THREE.Group();
+    const wing = this.frontWingGroup.clone();
+    wing.visible = true;
+    wing.position.set(0, -F.centreY, -F.pivotZ);
+    prop.add(wing);
+    prop.matrixAutoUpdate = false;
+    prop.visible = false;
+    this.debris.add(prop);
+    return prop;
+  }
+
+  /**
+   * Show the wings the pit crew is handling. props: { old, fresh } world matrices or null,
+   * and `stop` (a counter that changes for every stop with a wing change).
+   */
+  setWingProps(props) {
+    if (props.stop !== this.oldWingStop && props.old) {
+      // a new wing change: the copy of the old wing is taken as the crew lifts it off
+      if (this.oldWing) this.debris.remove(this.oldWing);
+      this.oldWing = this.wingProp();
+      this.oldWingStop = props.stop;
+    }
+    for (const [prop, m] of [[this.oldWing, props.old], [this.spareWing, props.fresh]]) {
+      if (!prop) continue;
+      prop.visible = !!m;
+      if (m) {
+        prop.matrix.copy(m);
+        prop.matrixWorldNeedsUpdate = true;
+      }
+    }
+  }
+
+  /** Throw a copy of `part` (a piece of the car that just broke off) onto the track. */
+  spawnDebris(part, state, sx) {
+    this.group.updateMatrixWorld(true);
+    const piece = part.clone();
+    piece.visible = true;
+    part.matrixWorld.decompose(piece.position, piece.quaternion, piece.scale);
+    this.debris.add(piece);
+    // carried along by the car's speed, thrown outwards and up, tumbling
+    const yaw = state.yaw;
+    const lx = Math.cos(yaw) * sx, lz = -Math.sin(yaw) * sx; // the car's left (sx = 1) or right
+    const out = 2 + Math.random() * 3;
+    this.pieces.push({
+      obj: piece,
+      v: new THREE.Vector3(state.vel.x * 0.75 + lx * out, 2 + Math.random() * 3, state.vel.z * 0.75 + lz * out),
+      spin: new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(14),
+      ground: (state.height ?? 0) + 0.02,
+      rest: false,
+    });
+    while (this.pieces.length > MAX_DEBRIS) this.debris.remove(this.pieces.shift().obj);
+  }
+
+  /** Fly and bounce the debris until it settles on the road. */
+  updateDebris(dt) {
+    const e = new THREE.Euler(), q = new THREE.Quaternion();
+    for (const p of this.pieces) {
+      if (p.rest) continue;
+      const o = p.obj;
+      p.v.y -= 9.81 * dt;
+      o.position.addScaledVector(p.v, dt);
+      o.quaternion.premultiply(q.setFromEuler(e.set(p.spin.x * dt, p.spin.y * dt, p.spin.z * dt)));
+      if (o.position.y < p.ground) {
+        o.position.y = p.ground;
+        p.v.y = Math.abs(p.v.y) * 0.25;
+        p.v.x *= 0.55;
+        p.v.z *= 0.55;
+        p.spin.multiplyScalar(0.45);
+        if (p.v.lengthSq() < 0.3) {
+          // flat on the road: keep its heading, lay it down
+          e.setFromQuaternion(o.quaternion, 'YXZ');
+          o.quaternion.setFromEuler(e.set(0, e.y, 0, 'YXZ'));
+          p.rest = true;
+        }
+      }
+    }
+  }
+
+  /** Clear the track of debris (reset, new track) and drop the pit crew's old wing. */
+  clearDebris() {
+    for (const p of this.pieces) this.debris.remove(p.obj);
+    this.pieces.length = 0;
+    for (const p of this.smoke ?? []) {
+      p.age = Infinity;
+      p.sprite.visible = false;
+    }
+    if (this.oldWing) this.debris.remove(this.oldWing);
+    this.oldWing = null;
   }
 
   rearWing(carbon, wings) {
     const b = this.body;
+    // the wing proper (mainplane, flap, endplates) on a pivot at the top of the swan
+    // necks, so damage can fold it back and twist it, and a big hit snaps it off
+    const pivot = new THREE.Group();
+    pivot.position.set(...REAR_WING_PIVOT);
+    const rw = new THREE.Group();
+    rw.position.set(...REAR_WING_PIVOT.map((v) => -v));
+    pivot.add(rw);
+    b.add(pivot);
+    this.rearWingPivot = pivot;
+    this.rearWingBroken = false;
     const span = 0.5;
     const xs = Array.from({ length: 17 }, (_, i) => -span + (2 * span * i) / 16);
     // rounded tips: the elements droop into the endplates
     const droop = (x) => Math.max(0, (Math.abs(x) - 0.36) / 0.14) ** 2 * 0.07;
-    this.add(b, this.wingElement(xs, (x) => ({ z: -2.4, y: 0.9 - droop(x), chord: 0.32, thick: 0.035, angle: 0.15 })), wings.rearMain);
-    this.add(b, this.wingElement(xs, (x) => ({ z: -2.6, y: 1.02 - droop(x) * 0.6, chord: 0.2, thick: 0.022, angle: 0.6 })), wings.rearFlap);
+    this.add(rw, this.wingElement(xs, (x) => ({ z: -2.4, y: 0.9 - droop(x), chord: 0.32, thick: 0.035, angle: 0.15 })), wings.rearMain);
+    this.add(rw, this.wingElement(xs, (x) => ({ z: -2.6, y: 1.02 - droop(x) * 0.6, chord: 0.2, thick: 0.022, angle: 0.6 })), wings.rearFlap);
     const endplate = [[-2.2, 0.86], [-2.22, 1.07], [-2.45, 1.12], [-2.72, 1.08], [-2.74, 0.8], [-2.6, 0.6], [-2.4, 0.64]];
-    for (const s of [-1, 1]) this.add(b, plateGeometry(endplate, 0.015, 'x', s * (span + 0.008)), wings.rearEndplate);
+    for (const s of [-1, 1]) this.add(rw, plateGeometry(endplate, 0.015, 'x', s * (span + 0.008)), wings.rearEndplate);
     // swan-neck pylons hooking over the mainplane from the crash structure
     const neck = [[-2.32, 0.34], [-2.44, 0.34], [-2.52, 0.62], [-2.5, 0.99], [-2.36, 0.99], [-2.4, 0.95], [-2.44, 0.62]];
     for (const x of [-0.06, 0.06]) this.add(b, plateGeometry(neck, 0.014, 'x', x), carbon);
@@ -278,10 +552,13 @@ export class Car {
    * camera sitting at the glass and looking backwards (see renderMirrors).
    */
   buildMirrors(carbon) {
-    const b = this.body;
     const M = MIRROR;
     this.mirrors = [];
-    for (const s of [-1, 1]) {
+    // index 0 = left (+x), 1 = right; each mirror (stalk, housing, glass, camera) is one
+    // group so a hit can knock it off
+    for (const s of [1, -1]) {
+      const b = new THREE.Group();
+      this.body.add(b);
       const [x, y, z] = [s * M.x, M.y, M.z];
       // swept carbon stalk from the chassis shoulder up to the housing
       this.add(b, tubeGeometry([[s * 0.3, 0.64, z + 0.07], [s * (M.x - 0.03), y - 0.035, z + 0.05]], 0.011, 6), carbon);
@@ -315,7 +592,7 @@ export class Car {
       cam.rotation.set(M.pitch, -s * M.yaw, 0, 'YXZ');
       b.add(cam);
 
-      this.mirrors.push({ target, camera: cam, glass });
+      this.mirrors.push({ target, camera: cam, glass, group: b, broken: false });
     }
   }
 
@@ -323,6 +600,7 @@ export class Car {
   renderMirrors(renderer, scene) {
     const prev = renderer.getRenderTarget();
     for (const m of this.mirrors) {
+      if (m.broken) continue; // knocked off: nothing to show
       renderer.setRenderTarget(m.target);
       renderer.render(scene, m.camera);
     }
@@ -393,12 +671,14 @@ export class Car {
         tube([[hub, c.r + 0.1, c.z], [sx * 0.15, 0.17, c.z + 0.14]], 0.014);
         tube([[sx * 0.19, 0.3, c.z - 0.16], [hub, c.r - 0.04, c.z - 0.14]], 0.012);
       }
-      this.wheels.push({ steer, spin, radius: c.r, front: c.front });
+      steer.rotation.order = 'YZX'; // steer and toe, then camber in the wheel's own frame
+      this.wheels.push({ steer, spin, radius: c.r, front: c.front, sx, toe: 0, camber: 0, drop: 0 });
     }
   }
 
   /** Free GPU resources (call after removing the car from the scene). */
   dispose() {
+    this.clearDebris();
     const mats = new Set();
     this.group.traverse((o) => {
       if (o.isMesh) {
@@ -408,6 +688,8 @@ export class Car {
     });
     for (const m of mats) m.dispose();
     for (const m of this.mirrors) m.target.dispose();
+    for (const p of this.smoke) p.sprite.material.dispose();
+    this.smokeGeo?.dispose();
     for (const t of this.textures) t.dispose();
   }
 
@@ -432,7 +714,10 @@ export class Car {
     this.group.position.set(state.position.x, (state.height ?? 0) + lift, state.position.z);
     this.group.rotation.set(-Math.atan(state.gradeF ?? 0), state.yaw, Math.atan(state.gradeL ?? 0), 'YXZ');
     for (const w of this.wheels) {
-      if (w.front) w.steer.rotation.y = state.steerAngle;
+      // bent suspension: the wheel toes out, leans in at the top and sags a little
+      w.steer.rotation.y = (w.front ? state.steerAngle : 0) + w.toe;
+      w.steer.rotation.z = w.camber;
+      w.steer.position.y = w.radius - w.drop;
       w.spin.rotation.x += (state.speed / w.radius) * dt;
     }
     // body pitch under accel/brake, roll in corners (smoothed in physics)

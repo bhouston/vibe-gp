@@ -108,8 +108,9 @@ export class CameraRig {
     const fovTarget = this.mode === 'tv' ? 35 : base + Math.min(speed / 90, 1) * 14;
     cam.fov += (fovTarget - cam.fov) * (1 - Math.exp(-4 * dt));
     // shake on wall impacts / kerbs
-    if (car.wallHit > 0.05 || car.surface === 'kerb') {
-      const amt = car.wallHit * 0.15 + (car.surface === 'kerb' ? 0.015 * Math.min(speed / 30, 1) : 0);
+    const rough = { kerb: 0.015, gravel: 0.03, sausage: 0.05 }[car.surface] ?? 0;
+    if (car.wallHit > 0.05 || rough) {
+      const amt = car.wallHit * 0.15 + rough * Math.min(speed / 30, 1);
       cam.position.x += (Math.random() - 0.5) * amt;
       cam.position.y += (Math.random() - 0.5) * amt;
     }

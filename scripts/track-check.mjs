@@ -58,8 +58,13 @@ console.log(`tightest radius:  ${tight.radius.toFixed(1)} m at s=${tight.s.toFix
     }
   }
 }
+{
+  const m = (...arrs) => (arrs.reduce((n, a) => n + a.reduce((k, v) => k + (v > 0), 0), 0) * P.ds).toFixed(0);
+  console.log(`run-off:          gravel ${m(P.gravelOutL, P.gravelOutR)} m of track side, sausage kerbs ${m(P.sausageL, P.sausageR)} m`);
+  for (const w of P.runoffWarnings) problems.push(`run-off (src/tracks/runoff.js): ${w}`);
+}
 if (def.realLength && Math.abs(P.length - def.realLength) / def.realLength > 0.03) problems.push('lap length is more than 3% off the real length');
-if (tight.radius < 12) problems.push(`a corner is tighter than 12 m radius (s=${tight.s.toFixed(0)}) — likely a kink or a control point out of order`);
+if (tight.radius < (def.minRadius ?? 12)) problems.push(`a corner is tighter than ${def.minRadius ?? 12} m radius (s=${tight.s.toFixed(0)}) — likely a kink or a control point out of order`);
 
 // sections too close together for walls to fit between them
 if (P.overlaps.length) {
@@ -221,6 +226,7 @@ function speedProfile(path, closed, cap = () => 95) {
 
 function simulateLap(viaPit, laps = 1) {
   const car = new CarPhysics(P, P.gridPose(0));
+  car.damageOn = false; // a wall brush shouldn't skew the reference lap time
   const dt = 1 / 120;
   const vlim = speedProfile(P, true);
   const vpit = pit && speedProfile(pit, false, (j) => (j * pit.ds >= pit.limitStart - 5 && j * pit.ds <= pit.limitEnd ? PIT.speedLimit - 0.5 : 95));
@@ -312,6 +318,22 @@ function svg(view = null) {
       out += `<path d="M${a.x} ${a.z}L${c.x} ${c.z}" stroke="#fd0" stroke-width="${sw * 1.5}"/>`;
     }
   }
+  // gravel traps (filled bands) and sausage kerbs (yellow)
+  for (const [inA, outA, sgn] of [[P.gravelInL, P.gravelOutL, 1], [P.gravelInR, P.gravelOutR, -1]]) {
+    for (let i = 0; i < P.N; i++) {
+      const j = P.wrap(i + 1);
+      if (!outA[i] || !outA[j]) continue;
+      const q = (k, lat) => [P.px[k] + P.leftX(k) * sgn * lat, P.pz[k] + P.leftZ(k) * sgn * lat];
+      out += `<path d="${poly([q(i, inA[i]), q(j, inA[j]), q(j, outA[j]), q(i, outA[i])], true)}" fill="#c8b68e"/>`;
+    }
+  }
+  for (let i = 0; i < P.N; i++) {
+    for (const [flags, sgn] of [[P.sausageL, 1], [P.sausageR, -1]]) {
+      if (!flags[i]) continue;
+      const o = sgn * (P.sausageLat + 0.3);
+      out += `<circle cx="${(P.px[i] + P.leftX(i) * o).toFixed(1)}" cy="${(P.pz[i] + P.leftZ(i) * o).toFixed(1)}" r="${sw * 1.6}" fill="#fc0"/>`;
+    }
+  }
   const colours = { main: '#e33', pit: '#3af', close: '#f0f' };
   for (const l of P.walls) {
     out += `<path d="${poly(l.pts, l.closed)}" fill="none" stroke="${colours[l.kind]}" stroke-width="${sw}"${l.render ? '' : ` stroke-dasharray="${sw * 4} ${sw * 2}"`}/>`;
@@ -336,6 +358,6 @@ function svg(view = null) {
   }
   const st = P.poseAt(0);
   out += `<circle cx="${st.x}" cy="${st.z}" r="${sw * 6}" fill="#0f0"/>`;
-  out += `<text x="${v.minX + sw * 10}" y="${v.minZ + sw * 20}" font-size="${sw * 14}" fill="#fff" font-family="sans-serif">${def.name}: ${P.length.toFixed(0)} m, north up, green = start; walls red, pit lane walls blue (dashed = garage fronts), closing walls magenta</text>`;
+  out += `<text x="${v.minX + sw * 10}" y="${v.minZ + sw * 20}" font-size="${sw * 14}" fill="#fff" font-family="sans-serif">${def.name}: ${P.length.toFixed(0)} m, north up, green = start; walls red, pit lane walls blue (dashed = garage fronts), closing walls magenta; gravel tan, sausage kerbs yellow</text>`;
   return out + '</svg>';
 }

@@ -3,18 +3,24 @@
 // the car on the jacks, fits a fresh set of tyres of the compound picked on the HUD
 // (warm from the blankets, clean) and drops it; the stop takes longer the further the
 // car is from the marks.
+// A front wing change can be ordered for the next stop (key F or the HUD): two crew pull
+// the old wing off and two more fit a new one while the tyres are changed, which makes it
+// a much longer stop (WING_CHANGE). It repairs all wing damage; new tyres always clear
+// the front tyre damage.
 import { PIT, angleDiff } from './trackPath.js';
 import { COMPOUNDS } from './tyres.js';
 
 const SERVICE_BASE = 2.2; // s for a stop right on the marks
 const SERVICE_PER_M = 0.5; // extra s per metre the car stopped off the marks
 const STOPPED = 0.4; // m/s: slow enough for the crew to go
+export const WING_CHANGE = 7.5; // s for a front wing change on the marks (in parallel with the tyres)
 
 export class PitStop {
   constructor() {
     this.pit = null;
     this.box = null;
     this.nextCompound = COMPOUNDS.medium; // what the crew has ready for the next stop
+    this.nextWing = false; // change the front wing at the next stop
     this.reset();
   }
 
@@ -35,6 +41,8 @@ export class PitStop {
     this.lastStop = null; // s, the most recent stop's length
     this.released = false; // true for the one step the car is let go
     this.fitting = null; // compound going on during the current stop
+    this.changingWing = false; // the current stop includes a front wing change
+    this.tyreTime = 0; // s the tyre change takes during the current stop
   }
 
   /** Where the car is relative to the box: metres along/across the lane and yaw error. */
@@ -64,6 +72,10 @@ export class PitStop {
       this.elapsed += dt;
       if (this.elapsed >= this.duration) {
         car.fitTyres(this.fitting);
+        if (this.changingWing) {
+          car.damage.repairWing();
+          this.nextWing = false; // a new wing is on: the next stop is tyres only unless asked again
+        }
         this.lastStop = this.duration;
         this.state = 'done';
         this.released = true;
@@ -80,8 +92,11 @@ export class PitStop {
         this.state = 'service';
         this.elapsed = 0;
         const miss = Math.hypot(o.along, o.across);
-        this.duration = SERVICE_BASE + SERVICE_PER_M * miss;
-        this.fitting = this.nextCompound; // locked in once the car is on the jacks
+        this.tyreTime = SERVICE_BASE + SERVICE_PER_M * miss;
+        // locked in once the car is on the jacks
+        this.fitting = this.nextCompound;
+        this.changingWing = this.nextWing;
+        this.duration = this.changingWing ? Math.max(this.tyreTime, WING_CHANGE + SERVICE_PER_M * miss) : this.tyreTime;
         return { ...controls, hold: true };
       }
       return controls;

@@ -116,6 +116,40 @@ export const SURFACES = {
     aeroLoss: 0.2,
     dirt: 0.03,
   },
+  // gravel trap: loose rounded stones, there to stop a car. The tyre ploughs a furrow,
+  // so grip is low and flat and the rolling drag is huge (~0.4 of the wheel load,
+  // with downforce that's well over 1 g at speed), the floor bottoms out (aeroLoss) and
+  // the tread picks up dust and grit.
+  gravel: {
+    name: 'gravel',
+    mu: 0.42,
+    loadExp: 0.95,
+    peakAlpha: 0.22,
+    peakKappa: 0.25,
+    lat: new SlipCurve(1.1, 0.25),
+    long: new SlipCurve(1.12, 0.25),
+    crr: 0.4,
+    bump: 0.3,
+    bumpWavelength: 0.7,
+    aeroLoss: 0.35,
+    dirt: 0.06,
+  },
+  // sausage kerb: a ~11 cm high rounded hump behind the kerb. A wheel that rides over it
+  // is thrown up and briefly unloaded: a big, sharp load swing and the floor stalling.
+  sausage: {
+    name: 'sausage',
+    mu: 1.3,
+    loadExp: 0.85,
+    peakAlpha: 0.09,
+    peakKappa: 0.1,
+    lat: new SlipCurve(1.4, -0.4),
+    long: new SlipCurve(1.6, -0.4),
+    crr: 0.06,
+    bump: 0.95,
+    bumpWavelength: 0.9,
+    aeroLoss: 0.6,
+    dirt: 0,
+  },
 };
 
 export const TYRE = {

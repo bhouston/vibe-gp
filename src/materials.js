@@ -4,7 +4,7 @@ import {
   color, float, vec2, vec3, uv, mix, step, fract, floor, abs, smoothstep, sin,
   positionWorld, positionWorldDirection, mx_noise_float, mx_fractal_noise_float, length, max,
   positionLocal, normalLocal, texture, attribute, cameraPosition, fwidth, bumpMap,
-  positionGeometry, normalGeometry, uniform,
+  positionGeometry, normalGeometry, uniform, mx_worley_noise_float,
 } from 'three/tsl';
 
 /** Tarmac: fine grain noise + a darker rubbered-in racing line. */
@@ -22,6 +22,42 @@ export function asphaltMaterial() {
   const edge = step(0.965, across).add(step(across, 0.035)).clamp(0, 1);
   m.colorNode = mix(lined, color(0xe8e8e8), edge);
   m.roughnessNode = mix(float(0.9), float(0.75), line).sub(grain.mul(0.08));
+  m.metalnessNode = float(0.0);
+  return m;
+}
+
+/**
+ * Gravel trap: rounded stones (a Worley cell pattern, each stone its own shade), raked
+ * into faint furrows along the track, with darker dished patches where cars have ploughed
+ * through. Stone-scale detail and bump fade out with distance so they never shimmer.
+ */
+export function gravelMaterial(hex = 0xab9f88) {
+  const m = new THREE.MeshStandardNodeMaterial();
+  const p = positionWorld.xz;
+  const dist = length(cameraPosition.sub(positionWorld));
+  const near = smoothstep(90.0, 12.0, dist);
+  const stones = mx_worley_noise_float(p.mul(16.0)); // ~6 cm stones: 0 at a stone's centre
+  const shade = mx_noise_float(floor(p.mul(16.0)).mul(0.37)).mul(0.5).add(0.5); // per-cell tint
+  const patches = mx_fractal_noise_float(p.mul(0.15), 3).mul(0.5).add(0.5);
+  const furrows = sin(uv().y.mul(9.0).add(mx_noise_float(p.mul(0.4)).mul(2.0))).mul(0.5).add(0.5);
+  const base = color(hex);
+  let c = base.mul(mix(float(0.82), float(1.12), shade.mul(near).add(float(0.5).mul(near.oneMinus()))));
+  c = c.mul(mix(float(1.0), float(0.72), smoothstep(0.25, 0.75, stones).mul(near))); // gaps between stones
+  c = c.mul(mix(float(0.86), float(1.04), patches)).mul(mix(float(0.96), float(1.02), furrows));
+  m.colorNode = c;
+  m.roughnessNode = float(0.95);
+  m.metalnessNode = float(0.0);
+  m.normalNode = bumpMap(stones.oneMinus().mul(near).add(furrows.mul(0.15)), 0.6);
+  return m;
+}
+
+/** Sausage kerb: weathered yellow paint on the raised hump, scuffed by tyres. */
+export function sausageMaterial() {
+  const m = new THREE.MeshStandardNodeMaterial();
+  const p = positionWorld.xz;
+  const scuff = mx_fractal_noise_float(p.mul(2.5), 3).mul(0.5).add(0.5);
+  m.colorNode = mix(color(0xf2c400), color(0x6a5a2a), smoothstep(0.62, 0.9, scuff).mul(0.6));
+  m.roughnessNode = float(0.6);
   m.metalnessNode = float(0.0);
   return m;
 }
@@ -45,7 +81,12 @@ export function kerbMaterial(stripes, [a, b] = [0xd81e1e, 0xf2f2f2]) {
  *    dark when it leans towards them, and the pattern flips as the view changes.
  * Fine detail (clumps, blade-scale bump) fades with distance so it never shimmers.
  */
-export function grassMaterial() {
+/**
+ * Ground beside and beyond the track. ground: 'grass' (default), 'desert' (sand beyond a
+ * strip of dusty compacted run-off, no mowing stripes), 'dunes' (coastal grass with sand
+ * blow-outs) or 'city' (park grass worn into dusty, paved patches).
+ */
+export function grassMaterial(ground = 'grass') {
   const m = new THREE.MeshStandardNodeMaterial();
   const p = positionWorld.xz;
   const g = attribute('grass', 'vec4');
@@ -57,12 +98,23 @@ export function grassMaterial() {
   const mid = mx_fractal_noise_float(p.mul(0.018), 3).mul(0.5).add(0.5); // ~50 m
   const clump = mx_noise_float(p.mul(0.9)).mul(0.5).add(0.5); // ~1 m tufts
 
-  // meadow: olive to fresh green, with darker lush hollows and dry patches
-  let meadow = mix(color(0x4a6a2a), color(0x617f34), macro);
-  meadow = mix(meadow, color(0x8c8a52), smoothstep(0.6, 0.82, mid).mul(0.4));
-  meadow = mix(meadow, color(0x3a5626), smoothstep(0.42, 0.18, mid).mul(0.55));
-  // mown: shorter, fresher and more even
-  const lawn = mix(color(0x447a2c), color(0x528834), macro.mul(0.6).add(mid.mul(0.4)));
+  let meadow, lawn;
+  if (ground === 'desert') {
+    // pale sand with darker gravelly flats; compacted, slightly darker sand by the track
+    meadow = mix(color(0xc9a36a), color(0xd9bb87), macro);
+    meadow = mix(meadow, color(0xa8875a), smoothstep(0.6, 0.85, mid).mul(0.5));
+    meadow = mix(meadow, color(0xe2c89a), smoothstep(0.4, 0.15, mid).mul(0.4));
+    lawn = mix(color(0xb8946a), color(0xc4a274), macro.mul(0.6).add(mid.mul(0.4)));
+  } else {
+    // meadow: olive to fresh green, with darker lush hollows and dry patches
+    meadow = mix(color(0x4a6a2a), color(0x617f34), macro);
+    meadow = mix(meadow, color(0x8c8a52), smoothstep(0.6, 0.82, mid).mul(0.4));
+    meadow = mix(meadow, color(0x3a5626), smoothstep(0.42, 0.18, mid).mul(0.55));
+    // mown: shorter, fresher and more even
+    lawn = mix(color(0x447a2c), color(0x528834), macro.mul(0.6).add(mid.mul(0.4)));
+    if (ground === 'dunes') meadow = mix(meadow, color(0xcdb98e), smoothstep(0.55, 0.8, mid).mul(0.85));
+    if (ground === 'city') meadow = mix(meadow, color(0x8f8a80), smoothstep(0.5, 0.75, mid).mul(0.7));
+  }
   let c = mix(meadow, lawn, mown);
 
   // mowing stripes: 3.5 m bands, alternate blade lean along the mowing direction
@@ -71,7 +123,7 @@ export function grassMaterial() {
   const dir = smoothstep(float(0.5).sub(aa), float(0.5).add(aa), fract(band)).mul(2.0).sub(1.0);
   const view = positionWorld.xz.sub(cameraPosition.xz).normalize();
   const lean = view.dot(vec2(g.x, g.y)).mul(dir); // + = blades lean away from the viewer: lighter
-  const stripeFade = smoothstep(450.0, 120.0, dist).mul(striped);
+  const stripeFade = smoothstep(450.0, 120.0, dist).mul(striped).mul(ground === 'desert' ? 0 : 1);
   c = c.mul(lean.mul(0.16).mul(stripeFade).add(1.0));
 
   // tufts: a little light/dark variation, stronger in the meadow
@@ -255,4 +307,27 @@ export function skyNode(sunDir, { sunDisc = true } = {}) {
   // below horizon fades to a hazy ground colour
   const below = smoothstep(0.0, -0.08, d.y);
   return mix(sky, color(0x8fa38a), below);
+}
+
+/**
+ * Night sky for the floodlit races: near-black zenith, a warm glow of light pollution
+ * low over the horizon from the city and the circuit's own floodlights, faint stars and
+ * a moon. `stars: false` for the environment map, so the stars don't speckle reflections.
+ */
+export function nightSkyNode(moonDir, { stars = true } = {}) {
+  const d = positionWorldDirection;
+  const h = max(d.y, 0.0);
+  let sky = mix(color(0x141a2a), color(0x020409), h.pow(0.35));
+  // light dome: orange sodium/LED haze, strongest at the horizon
+  sky = sky.add(color(0x6a4026).mul(h.mul(-9.0).exp().mul(0.55)));
+  const moon = max(d.dot(vec3(...moonDir).normalize()), 0.0);
+  sky = sky.add(color(0xdde6ff).mul(smoothstep(0.99985, 0.9999, moon).mul(1.5).add(moon.pow(60.0).mul(0.05))));
+  if (stars) {
+    // tiny sparse dots: peaks of a fine noise, fading out into the horizon haze
+    const n = mx_noise_float(d.mul(420.0));
+    const tw = mx_noise_float(d.mul(37.0)).mul(0.5).add(0.5);
+    sky = sky.add(vec3(smoothstep(0.78, 0.95, n).mul(tw).mul(smoothstep(0.08, 0.35, h)).mul(0.9)));
+  }
+  const below = smoothstep(0.0, -0.08, d.y);
+  return mix(sky, color(0x07080b), below);
 }

@@ -1,7 +1,8 @@
 // Pit crews: a tyre crew in team kit standing ready in every team's pit box, and the
 // player's crew animating the stop. Per box: a wheel gunner, an "off" man (takes the
 // old wheel away) and an "on" man (holding the new one) at each corner, plus front and
-// rear jack men: 14 people.
+// rear jack men, and four wing men who stand by in the garage: two to pull a damaged
+// front wing off and two to fit the new one when a wing change is ordered: 18 people.
 //
 // Everybody is drawn with a handful of InstancedMeshes (one per body part, tinted per
 // instance in team colours). A single scratch skeleton of Object3Ds is posed for each
@@ -28,6 +29,12 @@ const CORNERS = [
 ];
 const JITTER = [0, 0.025, 0.04, 0.015]; // the four corners don't work in lock-step
 const LEG = 0.45; // thigh and shin length
+const PEOPLE = 18; // per crew
+// front wing change (seconds into the stop; see WING_CHANGE in pitStop.js)
+const WING = { z: 2.62, y: 0.13, carryY: 0.5, floorY: 0.11, reach: 0.75, halfSpan: 0.7 }; // car frame, wing centre
+const W_OFF = 1.5, W_LIFT = 2.2, W_AWAY = 3.4, W_DOWN = 4.0; // old wing: unclipped, lifted clear, at the garage, on the floor
+const W_IN = 2.4, W_ARRIVE = 4.0, W_ON = 5.4, W_DONE = 6.6; // new wing: sets off, at the nose, on the car, clipped in
+const TYRE_HOLD = 0.85; // tyre-stop progress the crew waits at (car on the jacks) until the wing is on
 
 const smooth = (a, b, x) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -154,6 +161,9 @@ export class PitCrews {
     this.lift = 0; // player's car: jack height, wheels on the car, compound shown
     this.wheelOn = [true, true, true, true];
     this.carCompound = null;
+    this.wingMode = 'car'; // player's front wing: 'car' (as damaged), 'off' (removed), 'new'
+    this.wingProps = { old: null, fresh: null, stop: 0 }; // world matrices of the wings the crew handles
+    this._wingStops = 0;
     if (!pit || !pit.garageCount) return;
 
     this.rig = new Rig();
@@ -174,6 +184,7 @@ export class PitCrews {
         spare: COMPOUND_LIST[k % 3], // what the other teams have on their blankets
         people: [],
         ground: [], // old tyres left on the floor after a stop
+        oldWing: null, // box coordinates of a removed front wing left on the floor
         svc: null,
         post: null,
       };
@@ -186,9 +197,10 @@ export class PitCrews {
       for (let c = 0; c < 4; c++) for (const role of ['gun', 'off', 'on']) add(role, c);
       add('jackF');
       add('jackR');
+      for (let c = 0; c < 2; c++) for (const role of ['wingOff', 'wingOn']) add(role, c);
       this.crews.push(crew);
     }
-    const people = this.crews.length * 14;
+    const people = this.crews.length * PEOPLE;
 
     const suit = simpleMaterial(0xffffff, 0.75);
     const helmet = simpleMaterial(0xffffff, 0.28, 0.1);
@@ -249,6 +261,8 @@ export class PitCrews {
     this.lift = 0;
     this.wheelOn.fill(true);
     this.carCompound = null;
+    this.wingMode = 'car';
+    this.wingProps.old = this.wingProps.fresh = null;
     if (!this.crews.length) return;
     for (const crew of this.crews) {
       const player = crew.k === playerK;
@@ -256,9 +270,69 @@ export class PitCrews {
       else crew.svc = crew.post = null;
       const active = player && (crew.svc || ['approach', 'inBox'].includes(pitStop.state));
       const next = player ? pitStop.nextCompound : crew.spare;
+      // the wing crew: the plan for both wings, which the four wing men follow
+      crew.wing = this.wingPlan(crew, player && pitStop.nextWing, active);
+      if (player) this.wingOutputs(crew);
       for (const p of crew.people) this.move(crew, p, this.target(crew, p, active, next), dt, time);
     }
     this.draw(time);
+  }
+
+  /**
+   * Where the old and the new front wing are (car frame of the stop: x, y, z of the wing's
+   * centre, or null) and what the wing men do. ordered: the player wants a new wing at
+   * the next stop, so the fitters stand by holding one.
+   */
+  wingPlan(crew, ordered, active) {
+    const svc = crew.svc;
+    const o = crew.o;
+    const onCar = { x: 0, y: WING.y + this.lift, z: WING.z };
+    const hold = { x: o * 3.4, y: WING.carryY, z: 5.6 }; // the spare, in the garage mouth
+    const drop = { x: o * 3.4, y: WING.floorY, z: 3.9 }; // where the old wing is put down
+    const lerp = (a, b, k) => ({ x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k });
+    const plan = { old: null, fresh: null, oldMen: null, freshMen: null };
+    if (svc?.wing) {
+      const e = svc.e;
+      // old wing: unclip, lift it forward clear of the nose, carry it to the garage, put it down
+      const lifted = { x: 0, y: WING.carryY, z: 3.9 }, away = { x: drop.x, y: WING.carryY, z: drop.z };
+      if (e < W_OFF) plan.oldMen = { at: onCar, pose: e < 0.3 ? 'crouch' : 'grab' };
+      else if (e < W_LIFT) plan.old = lerp(onCar, lifted, smooth(W_OFF, W_LIFT, e));
+      else if (e < W_AWAY) plan.old = lerp(lifted, away, smooth(W_LIFT, W_AWAY, e));
+      else plan.old = lerp(away, drop, smooth(W_AWAY, W_DOWN, e));
+      if (plan.old) plan.oldMen = { at: plan.old, pose: e < W_DOWN ? 'carryLow' : 'stand' };
+      // new wing: from the garage to the nose, slid on, clipped in, then the fitters step back
+      const nose = { x: 0, y: WING.carryY, z: 3.6 };
+      if (e < W_IN) plan.fresh = hold;
+      else if (e < W_ARRIVE) plan.fresh = lerp(hold, nose, smooth(W_IN, W_ARRIVE, e));
+      else if (e < W_ON) plan.fresh = lerp(nose, onCar, smooth(W_ARRIVE, W_ON, e));
+      plan.freshMen = plan.fresh
+        ? { at: plan.fresh, pose: 'carryLow' }
+        : { at: e < W_DONE ? onCar : { ...onCar, z: onCar.z + 0.4 }, pose: e < W_DONE ? 'grab' : 'stand' };
+      return plan;
+    }
+    if (ordered) {
+      plan.fresh = hold;
+      plan.freshMen = { at: hold, pose: 'carryLow' };
+      if (active) plan.oldMen = { at: { ...onCar, z: onCar.z + 0.25 }, pose: 'crouch' }; // ready at the nose
+    }
+    return plan;
+  }
+
+  /** The player's wing state for the car (wingMode) and the props (wingProps, world matrices). */
+  wingOutputs(crew) {
+    const svc = crew.svc, plan = crew.wing;
+    if (svc?.wing) this.wingMode = svc.e < W_OFF ? 'car' : svc.e < W_ON ? 'off' : 'new';
+    const f = svc ? svc.frame : { x: 0, z: 0, yaw: 0 };
+    const at = (w, x, z, yaw) => new THREE.Matrix4().compose(
+      this.toWorld(crew, x, w.y, z, new THREE.Vector3()),
+      this._q.setFromAxisAngle(this._up, crew.box.yaw + yaw),
+      this._s,
+    );
+    const inFrame = (w) => at(w, ...PitCrews.toBox(f, w.x, w.z), f.yaw);
+    if (plan.old) this.wingProps.old = inFrame(plan.old);
+    else if (crew.oldWing) this.wingProps.old = at({ y: WING.floorY }, crew.oldWing.x, crew.oldWing.z, crew.oldWing.yaw);
+    if (plan.fresh) this.wingProps.fresh = inFrame(plan.fresh);
+    this.wingProps.stop = this._wingStops;
   }
 
   /** Follow the player's stop: start (car frame, old compound), progress, and the release. */
@@ -266,12 +340,21 @@ export class PitCrews {
     if (pitStop.state === 'service') {
       if (!crew.svc) {
         const o = pitStop.offset(car);
-        crew.svc = { frame: { x: o.across, z: o.along, yaw: o.yaw }, old: car.compound, fit: pitStop.fitting, u: 0 };
+        crew.svc = { frame: { x: o.across, z: o.along, yaw: o.yaw }, old: car.compound, fit: pitStop.fitting, u: 0, e: 0, wing: pitStop.changingWing };
         crew.ground.length = 0;
+        if (crew.svc.wing) {
+          crew.oldWing = null; // last stop's wing is cleared away; this stop's one replaces it
+          this._wingStops++; // the car hands over its current (damaged) wing for this stop
+        }
         crew.post = null;
       }
       const s = crew.svc;
-      s.u = Math.min(1, pitStop.elapsed / pitStop.duration);
+      const T = pitStop.duration, Tt = pitStop.tyreTime, e = pitStop.elapsed;
+      s.e = e;
+      // a wing change takes longer than the tyres: the tyre crew finish, then wait with the
+      // car on the jacks until the wing is on, and the jacks drop at the end of the stop
+      if (!s.wing || T <= Tt) s.u = Math.min(1, e / T);
+      else s.u = e < TYRE_HOLD * Tt ? e / Tt : e > T - (1 - TYRE_HOLD) * Tt ? 1 - (T - e) / Tt : TYRE_HOLD;
       this.lift = LIFT * smooth(0.03, 0.1, s.u) * (1 - smooth(0.86, 0.93, s.u));
       CORNERS.forEach((_, c) => {
         const j = JITTER[c];
@@ -284,6 +367,12 @@ export class PitCrews {
         if (p.role !== 'off' || !p.tyre) continue;
         crew.ground.push({ x: p.x + Math.sin(p.yaw) * 0.55, z: p.z + Math.cos(p.yaw) * 0.55, compound: p.tyre.compound });
         p.tyre = null;
+      }
+      // a removed wing ends up on the floor by the garage
+      if (crew.svc.wing && crew.svc.e >= W_OFF) {
+        const f = crew.svc.frame;
+        const [x, z] = PitCrews.toBox(f, crew.o * 3.4, 3.9);
+        crew.oldWing = { x, z, yaw: f.yaw };
       }
       crew.svc = null;
       crew.post = 0;
@@ -299,6 +388,26 @@ export class PitCrews {
     const o = crew.o;
     const t = { x: 0, z: 0, fx: 0, fz: 1, pose: POSE.stand, low: 0, tyre: null, spin: false, foot: null, f };
     const hub = (c) => ({ c, f, lift: this.lift });
+    if (p.role === 'wingOff' || p.role === 'wingOn') {
+      const plan = crew.wing, sx = p.c === 0 ? 1 : -1;
+      const job = p.role === 'wingOff' ? plan.oldMen : plan.freshMen;
+      if (job) {
+        // one at each end of the wing, in front of it, facing the car
+        t.x = job.at.x + sx * WING.halfSpan;
+        t.z = job.at.z + WING.reach;
+        t.fx = 0;
+        t.fz = -1;
+        t.pose = POSE[job.pose];
+        t.low = job.pose === 'carryLow' ? 1 : 0;
+      } else {
+        // standing by just inside the garage
+        t.x = o * 3.7;
+        t.z = (p.role === 'wingOff' ? 3.2 : 4.6) + p.c * 0.8;
+        t.fx = -o;
+        t.fz = 0;
+      }
+      return t;
+    }
     if (p.role === 'jackF' || p.role === 'jackR') {
       const front = p.role === 'jackF';
       const dir = front ? 1 : -1;
@@ -441,7 +550,8 @@ export class PitCrews {
         this.toWorld(crew, p.x, 0, p.z, rig.root.position);
         rig.root.rotation.set(0, crew.box.yaw + p.yaw, 0);
         const amp = Math.min(1, p.v / 1.6);
-        rig.apply(p.pose, [p.phase, amp], !!p.tyre || p.role.startsWith('jack'));
+        const holding = !!p.tyre || p.role.startsWith('jack') || (p.role.startsWith('wing') && p.low > 0.5);
+        rig.apply(p.pose, [p.phase, amp], holding);
         for (const part of rig.parts) {
           const c = part.key === 'helmet' ? col.helmet : part.key === 'stripe' ? col.stripe : col.suit;
           P[part.key].push(part.node.matrixWorld, c);

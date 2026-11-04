@@ -42,7 +42,82 @@ html, body {
 .speed-box span { font-size: 54px; font-weight: 800; line-height: 1; }
 small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
 
-.help { left: 16px; bottom: 16px; font-size: 13px; line-height: 1.6; color: #d6dbe6; }
+/* ---- settings: gear button (top right) and its panel ---- */
+.settings-btn {
+  pointer-events: auto;
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 40px;
+  height: 40px;
+  padding: 8px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(10, 12, 18, 0.62);
+  backdrop-filter: blur(6px);
+  color: #d6dbe6;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.settings-btn svg { width: 100%; height: 100%; display: block; fill: currentColor; transition: transform 0.3s; }
+.settings-btn:hover { color: #fff; }
+.settings-btn:hover svg, .settings-btn.active svg { transform: rotate(60deg); }
+.settings-btn.active { color: #fff; background: rgba(10, 12, 18, 0.85); }
+
+.settings {
+  pointer-events: auto;
+  top: 64px;
+  right: 16px;
+  width: 320px;
+  z-index: 2;
+  background: rgba(10, 12, 18, 0.88);
+}
+.settings[hidden] { display: none; }
+.settings h2 { margin: 2px 0 10px; font-size: 13px; letter-spacing: 0.16em; text-transform: uppercase; }
+.settings h3 { margin: 14px 0 6px; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #9aa3b5; }
+.settings-toggles { display: flex; flex-direction: column; gap: 6px; }
+.setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.setting:hover { background: rgba(255, 255, 255, 0.09); }
+.setting b { display: block; font-size: 14px; }
+.setting small { display: block; margin-top: 2px; letter-spacing: 0.02em; }
+.switch {
+  flex: none;
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: #3a4050;
+  transition: background 0.15s;
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+.setting.on .switch { background: var(--team, #e10600); }
+.setting.on .switch::after { transform: translateX(16px); }
+
+.help { font-size: 13px; line-height: 1.6; color: #d6dbe6; }
 .help b { color: #fff; }
 .help .dim { color: #8790a3; }
 
@@ -60,6 +135,7 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
 }
 #flash.show { opacity: 1; transform: translate(-50%, 0); }
 #flash.best { color: #c77dff; }
+#flash.warn { color: #ff5a3c; }
 #surface {
   position: absolute;
   top: 28%;
@@ -117,6 +193,36 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
 }
 .compound.selected svg { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--c) 70%, transparent)); }
 
+/* ---- front wing change for the next pit stop ---- */
+.wing-change {
+  pointer-events: auto;
+  position: relative;
+  width: 100%;
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 26px 5px 8px;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #8790a3;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 0.15s, border-color 0.15s, background 0.15s;
+}
+.wing-change svg { width: 30px; height: 11px; fill: currentColor; flex: none; }
+.wing-change b { margin-left: auto; font-size: 10px; }
+.wing-change kbd { position: absolute; top: 3px; right: 5px; font: inherit; font-size: 9px; color: #5c6476; }
+.wing-change:hover { opacity: 0.95; }
+.wing-change.selected { opacity: 1; color: #fff; border-color: var(--team); background: color-mix(in srgb, var(--team) 18%, transparent); }
+.wing-change.needed:not(.selected) { color: #ffb020; opacity: 1; animation: wing-pulse 1.2s ease-in-out infinite; }
+@keyframes wing-pulse { 50% { border-color: rgba(255, 176, 32, 0.6); } }
+
 /* ---- tyres & driver aids ---- */
 .tyres { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
 .tyre-grid { display: grid; grid-template-columns: repeat(2, 44px); gap: 4px 18px; }
@@ -133,9 +239,19 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
   background: #4c8dff;
   border: 2px solid transparent;
 }
+.tyre { position: relative; overflow: hidden; }
+/* collision damage: a red bar along the bottom of the tyre, as long as the damage */
+.tyre::after { content: ''; position: absolute; left: 0; bottom: 0; height: 4px; width: var(--dmg, 0%); background: #ff2a2a; }
+.tyre.damaged { outline: 2px dashed #ff2a2a; outline-offset: 1px; }
+.tyre-grid { position: relative; padding-top: 9px; }
+/* front wing condition, one bar per half, over the front tyres */
+.wing-ind { position: absolute; top: 0; left: 0; right: 0; height: 5px; display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+.wing-ind i { border-radius: 2px; background: #3fa34d; }
+.wing-ind i.lost { background: transparent; outline: 1px dashed #ff2a2a; outline-offset: -1px; }
 .tyre.slide { border-color: #fff; }
 .tyre.kerb { box-shadow: 0 0 0 2px #e10600; }
 .tyre.grass { box-shadow: 0 0 0 2px #3fa34d; }
+.tyre.gravel { box-shadow: 0 0 0 2px #c9b48a; }
 .aids { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .aids span { font-size: 11px; font-weight: 800; letter-spacing: 0.1em; padding: 2px 6px; border-radius: 4px; background: #2a2f3a; color: #9aa3b5; }
 .aids span.on { background: #1f6f3f; color: #fff; }
@@ -143,7 +259,18 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
 
 /* ---- in-race extras ---- */
 .timing .row.track { font-size: 13px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #fff; }
-.map { top: 16px; right: 16px; width: 200px; height: 200px; padding: 10px; }
+/* ---- whole-car damage diagram, top view, nose up ---- */
+.damage-map { right: 282px; bottom: 16px; width: 70px; padding: 8px 8px 6px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.damage-map svg { width: 54px; height: 112px; display: block; }
+.damage-map small { font-size: 8px; font-weight: 800; letter-spacing: 0.12em; color: #9aa3b5; }
+.damage-map.off svg { opacity: 0.3; }
+.damage-map.off small { color: #5c6476; }
+#damage-car .chassis { fill: #3a4050; }
+#damage-car .part { fill: #3fa34d; stroke: rgba(0, 0, 0, 0.35); stroke-width: 0.6; }
+#damage-car line.part { fill: none; stroke: #3fa34d; stroke-width: 2.4; stroke-linecap: round; }
+#damage-car .part.lost { fill: transparent; stroke: #ff2a2a; stroke-dasharray: 2 1.5; stroke-width: 0.8; }
+#damage-car line.part.lost { stroke: #ff2a2a; stroke-width: 1; }
+.map { top: 16px; right: 64px; width: 200px; height: 200px; padding: 10px; }
 #minimap { width: 100%; height: 100%; display: block; }
 #hud.menu-open > :not(#error) { display: none; }
 
@@ -154,7 +281,7 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: safe center; /* a long circuit list scrolls instead of clipping the title */
   gap: 10px;
   padding: 24px 16px;
   background: radial-gradient(ellipse at center, rgba(8, 10, 16, 0.55), rgba(8, 10, 16, 0.88));
@@ -164,8 +291,36 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
 #menu h1 { margin: 0; font-size: 56px; font-weight: 900; letter-spacing: 0.08em; font-style: italic; }
 #menu h1 span { color: #e10600; }
 #menu .sub { margin: 14px 0 6px; color: #9aa3b5; letter-spacing: 0.25em; text-transform: uppercase; font-size: 13px; }
-#menu .hint { color: #8790a3; font-size: 13px; margin-top: 14px; }
-#menu-tracks { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; max-width: 1100px; }
+#menu .hint { color: #8790a3; font-size: 13px; margin-top: 4px; text-align: center; }
+.menu-step { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; }
+.menu-step[hidden] { display: none; }
+.menu-step .step-label { margin: 10px 0 -8px; color: #e10600; font-size: 12px; font-weight: 800; letter-spacing: 0.3em; text-transform: uppercase; }
+.menu-actions { display: flex; gap: 14px; justify-content: center; margin-top: 14px; }
+.menu-btn {
+  min-width: 140px;
+  padding: 12px 28px;
+  border: 2px solid #3a4152;
+  border-radius: 999px;
+  background: rgba(20, 23, 32, 0.9);
+  color: #fff;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 0.15s, background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.menu-btn:hover { border-color: #fff; transform: translateY(-2px); }
+.menu-btn.primary { background: #e10600; border-color: #e10600; }
+.menu-btn.primary:hover { background: #ff1a10; border-color: #ff1a10; box-shadow: 0 6px 24px rgba(225, 6, 0, 0.45); }
+.menu-btn.go { min-width: 200px; font-size: 22px; font-style: italic; letter-spacing: 0.2em; }
+#menu-tracks { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; max-width: 1240px; }
+#menu-tracks .track-card { width: 184px; padding: 10px 12px 10px; }
+#menu-tracks .track-card svg { height: 104px; margin-bottom: 6px; }
+#menu-tracks .track-name { font-size: 15px; }
+#menu-tracks .track-meta, #menu-tracks .track-best { font-size: 12px; }
+#menu-tracks .track-best { margin-top: 4px; }
 .track-card {
   width: 230px;
   padding: 14px 14px 12px;
@@ -184,6 +339,7 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
 .track-name { font-weight: 800; font-size: 17px; }
 .track-meta { color: #9aa3b5; font-size: 13px; margin-top: 2px; }
 .track-best { color: #9aa3b5; font-size: 13px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+.night-tag { display: inline-block; vertical-align: 2px; margin-left: 4px; padding: 1px 6px; border-radius: 6px; background: #1d2647; color: #ffd36b; font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
 .track-best span { color: #c77dff; font-weight: 700; }
 
 /* ---- team selector ---- */

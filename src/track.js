@@ -5,13 +5,15 @@ import * as THREE from 'three/webgpu';
 import { boxGeometry, ribbonGeometry, planeXZ } from './geometry.js';
 import {
   asphaltMaterial, kerbMaterial, grassMaterial, checkerMaterial, simpleMaterial, layered,
+  gravelMaterial, sausageMaterial,
 } from './materials.js';
 import { buildGarageFronts } from './pitBoxes.js';
 import { buildBarriers, slopeNormal } from './barriers.js';
 import { buildGrandstands } from './grandstands.js';
 import { color, float, uv, mix, step, abs, fract, positionWorld, mx_noise_float, mx_fractal_noise_float } from 'three/tsl';
-import { TrackPath, KERB_WIDTH, PIT, angleDiff } from './trackPath.js';
-import { TerrainField, terrainGeometry, buildTrees, TERRAIN_DROP, VERGE, SKIRT } from './terrain.js';
+import { TrackPath, KERB_WIDTH, PIT, SAUSAGE, angleDiff } from './trackPath.js';
+import { buildFloodMask, applyFloodMask, buildFloodlights } from './night.js';
+import { TerrainField, terrainGeometry, buildTrees, buildCity, TERRAIN_DROP, VERGE, SKIRT } from './terrain.js';
 
 /**
  * Pit lane surface. uv.x = metres along the lane, uv.y = metres across from the lane
@@ -57,7 +59,8 @@ export class Track {
 
     // ground: a terrain heightfield following the track's height, and flat grass verges
     // at road level out past the walls (the terrain drops just below them)
-    const grass = grassMaterial();
+    const sc = this.def.scenery ?? {};
+    const grass = grassMaterial(sc.desert ? 'desert' : sc.dunes ? 'dunes' : sc.city ? 'city' : 'grass');
     this.field = new TerrainField(P);
     const ground = new THREE.Mesh(terrainGeometry(this.field), grass);
     ground.receiveShadow = true;
@@ -78,6 +81,9 @@ export class Track {
         g.add(this.mesh(this.strip(a, bEdge, 0.04, (lat) => Math.abs(lat), i0, count), kerbMat));
       }
     }
+
+    // gravel traps and sausage kerbs where the real circuit has them (src/tracks/runoff.js)
+    this.buildRunoff();
 
     // barriers: concrete walls with ad boards, tyre stacks on the outside of corners,
     // catch fences (track walls, pit wall, pit lane walls)
@@ -101,11 +107,57 @@ export class Track {
     // spectator grandstands wherever there is room beside the circuit
     this.stands = buildGrandstands(P, g);
     // woods and tree lines beyond the circuit, clear of the stands
-    buildTrees(P, this.field, this.stands, g, this.def.id);
+    buildTrees(P, this.field, this.stands, g, this.def.id, this.def.scenery);
+    if (this.def.scenery?.city) buildCity(P, this.field, this.stands, g, this.def.scenery);
+    // decks under the road where the circuit crosses over itself
+    if (P.bridge.some(Boolean)) g.add(this.bridges());
+
+    // night races: floodlight towers, and the land beyond their reach falls into darkness
+    this.floodHeads = [];
+    if (this.def.night) {
+      this.floodHeads = buildFloodlights(P, this.field, this.stands, g);
+      this.floodMask = buildFloodMask(P, this.stands);
+      applyFloodMask(g);
+    }
 
     g.traverse((o) => {
       if (o.isMesh && o !== ground) o.receiveShadow = true;
     });
+  }
+
+  /**
+   * Where the circuit passes over itself (P.bridge), a concrete deck under the road and its
+   * verges, wall to wall: a soffit 1.4 m down and a fascia down each side. The approaches
+   * are the terrain, which follows each road's own height outside the other's corridor.
+   */
+  bridges() {
+    const P = this.path;
+    const g = new THREE.Group();
+    const mat = simpleMaterial(0x9a9890, 0.9);
+    mat.side = THREE.DoubleSide;
+    const DEPTH = 1.4;
+    const pad = Math.round(25 / P.ds); // carry the deck onto the abutments
+    const flags = Array.from(P.bridge, Boolean);
+    const ext = flags.map((_, i) => { for (let k = -pad; k <= pad; k++) if (flags[P.wrap(i + k)]) return true; return false; });
+    for (const [i0, count] of this.runs(ext)) {
+      const at = (k) => P.wrap(i0 + k);
+      const edge = (i, side) => side * ((side > 0 ? P.wallL[i] : P.wallR[i]) + VERGE);
+      const pt = (i, lat, dy) => [P.px[i] + P.leftX(i) * lat, P.py[i] + dy, P.pz[i] + P.leftZ(i) * lat];
+      g.add(new THREE.Mesh(ribbonGeometry(count, (k) => {
+        const i = at(k);
+        return { a: pt(i, edge(i, -1), -DEPTH), b: pt(i, edge(i, 1), -DEPTH), na: [0, -1, 0], uva: [k * P.ds, 0], uvb: [k * P.ds, 1] };
+      }), mat));
+      for (const side of [1, -1]) {
+        g.add(new THREE.Mesh(ribbonGeometry(count, (k) => {
+          const i = at(k), lat = edge(i, side);
+          return { a: pt(i, lat, -0.05), b: pt(i, lat, -DEPTH), na: [P.leftX(i) * side, 0, P.leftZ(i) * side], uva: [k * P.ds, 0], uvb: [k * P.ds, 1] };
+        }), mat));
+      }
+    }
+    g.traverse((o) => {
+      if (o.isMesh) o.castShadow = o.receiveShadow = true;
+    });
+    return g;
   }
 
   mesh(geo, mat) {
@@ -148,6 +200,79 @@ export class Track {
         uvb: [s, uvY(latB)],
       };
     });
+  }
+
+  /**
+   * Gravel traps: a flat bed of stones over the verge between gravelIn and gravelOut on
+   * each side (uv = metres along, lateral offset). Sausage kerbs: a rounded yellow hump
+   * behind the painted kerb, ramping up and down at each end of a run.
+   */
+  buildRunoff() {
+    const P = this.path, g = this.group;
+    const gravelMat = layered(gravelMaterial(P.gravelColor), 1);
+    for (const side of [1, -1]) {
+      const inA = side > 0 ? P.gravelInL : P.gravelInR, outA = side > 0 ? P.gravelOutL : P.gravelOutR;
+      for (const [i0, count] of this.runs(Array.from(outA, (v) => v > 0))) {
+        const n = count - 1; // the run's last flag is the first sample past it
+        if (n < 2) continue;
+        const geo = ribbonGeometry(n, (k) => {
+          const i = P.wrap(i0 + k), lx = P.leftX(i), lz = P.leftZ(i), h = P.py[i] + 0.012;
+          const a = side * inA[i], b = side * outA[i];
+          return {
+            a: [P.px[i] + lx * a, h, P.pz[i] + lz * a],
+            b: [P.px[i] + lx * b, h, P.pz[i] + lz * b],
+            na: slopeNormal(P.grade[i], P.tx[i], P.tz[i]),
+            uva: [(i0 + k) * P.ds, a],
+            uvb: [(i0 + k) * P.ds, b],
+          };
+        });
+        g.add(this.mesh(geo, gravelMat));
+      }
+    }
+
+    // sausage kerbs: profile across the hump (lateral fraction, height fraction)
+    const prof = [[0, 0], [0.12, 0.55], [0.3, 0.92], [0.5, 1], [0.7, 0.92], [0.88, 0.55], [1, 0]];
+    const sMat = sausageMaterial();
+    for (const side of [1, -1]) {
+      const flags = side > 0 ? P.sausageL : P.sausageR;
+      for (const [i0, count] of this.runs(Array.from(flags, Boolean))) {
+        const n = count - 1;
+        if (n < 2) continue;
+        const pos = [], uvs = [], idx = [];
+        for (let k = 0; k < n; k++) {
+          const i = P.wrap(i0 + k), lx = P.leftX(i), lz = P.leftZ(i);
+          const ramp = Math.min(1, k / 1.5, (n - 1 - k) / 1.5); // ends slope down to the ground
+          for (const [f, hf] of prof) {
+            const lat = side * (P.sausageLat + f * SAUSAGE.width);
+            pos.push(P.px[i] + lx * lat, P.py[i] + 0.02 + hf * SAUSAGE.height * Math.max(0, ramp), P.pz[i] + lz * lat);
+            uvs.push((i0 + k) * P.ds, f);
+          }
+        }
+        const M = prof.length;
+        for (let k = 0; k < n - 1; k++) {
+          for (let j = 0; j < M - 1; j++) {
+            const a = k * M + j, b = a + 1, c = a + M, d = c + 1;
+            if (side > 0) idx.push(a, c, b, b, c, d);
+            else idx.push(a, b, c, b, d, c);
+          }
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        geo.setIndex(idx);
+        geo.computeVertexNormals();
+        // make sure the hump faces up whichever way the strip winds
+        const nrm = geo.attributes.normal;
+        if (nrm.getY(M * Math.floor(n / 2) + 3) < 0) {
+          idx.reverse();
+          geo.setIndex(idx);
+          geo.computeVertexNormals();
+        }
+        const mesh = this.mesh(geo, sMat);
+        mesh.castShadow = true;
+        g.add(mesh);
+      }
+    }
   }
 
   /**
@@ -350,5 +475,6 @@ export class Track {
       }
     });
     for (const t of this.textures ?? []) t.dispose();
+    this.floodMask?.texture.dispose();
   }
 }

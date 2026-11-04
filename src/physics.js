@@ -18,9 +18,16 @@
 // (split into the car's forward and sideways directions), and vertical curvature adds
 // or removes load: a dip like Eau Rouge compresses the car (v²·κ extra), a crest
 // unloads it.
+// Damage (damage.js): wall impacts can hurt every part of the car. A bent or missing
+// front wing half costs that side's front downforce (understeer, and a pull to one side);
+// a broken rear wing costs rear downforce (oversteer) but also drag; a damaged floor
+// costs downforce on both axles; crushed sidepods add drag and overheat the engine; a
+// hurt power unit / gearbox loses power; bent suspension knocks a wheel out of line
+// (toe-out pulls the car, camber costs grip); damaged tyres grip less and drag.
 import { CAR_DIMS } from './car.js';
 import { KERB_WIDTH, WALL_THICKNESS, PIT } from './trackPath.js';
 import { SURFACES, TYRE, COMPOUNDS, tyreForce, tempGrip, peakForce } from './tyres.js';
+import { CarDamage, DAMAGE } from './damage.js';
 
 const G = 9.81;
 const RHO = 1.225; // air density, kg/m^3
@@ -142,8 +149,8 @@ export class CarPhysics {
     this.throttle = 0; // pedal positions after rate limiting
     this.brake = 0;
     this.downforce = 0;
-    this.tc = true; // assists (keyboard input is on/off, so these default on)
-    this.abs = true; // anti-lock brakes are always on
+    this.tc = true; // assists (keyboard input is on/off, so these default on; toggled in Settings)
+    this.abs = true; // anti-lock brakes
     this.steerInput = 0;
     this.tcActive = false;
     this.absActive = false;
@@ -159,9 +166,15 @@ export class CarPhysics {
       temp: TYRE.tBlanket,
       dirt: 0,
       wear: 0, // 0 = new tread, 1 = worn out
+      damage: 0, // tyre collision damage (see damage.js)
+      susp: 0, // suspension damage at this corner
+      toe: 0, // rad of toe from bent suspension
       dist: 0, // rolled distance, drives the kerb-ridge phase
     }));
     this.compound ??= COMPOUNDS.medium; // a reset keeps the compound, on a fresh set
+    this.damage ??= new CarDamage();
+    this.damage.reset(); // a reset is a fresh car
+    this.damageOn ??= true; // tools (track-check's autopilot) can turn damage off
   }
 
   /** A fresh set of `compound` tyres, warm from the blankets (pit stop). */
@@ -172,6 +185,7 @@ export class CarPhysics {
       w.dirt = 0;
       w.wear = 0;
     }
+    this.damage.repairTyres();
   }
 
   step(input, dt) {
@@ -232,6 +246,7 @@ export class CarPhysics {
     // --- dynamics ---
     const n = P.substeps;
     const h = dt / n;
+    this.dmgAero = this.damage.aero;
     this.tcActive = false;
     this.absActive = false;
     for (let k = 0; k < n; k++) this.substep(h);
@@ -281,9 +296,17 @@ export class CarPhysics {
     let aeroLoss = 0;
     for (const w of this.wheels) aeroLoss += w.surface.aeroLoss / 4;
     const qd = 0.5 * RHO * vx * vx;
-    const downforce = qd * P.ClA * (1 - aeroLoss);
-    const drag = qd * P.CdA * Math.sign(vx);
-    this.downforce = downforce;
+    // damage: the floor scales all downforce, the rear wing the rear's, and each front
+    // wing half its side's front downforce
+    const dmg = this.damage;
+    const da = this.dmgAero;
+    const downforce = qd * P.ClA * (1 - aeroLoss) * da.floor;
+    const lossL = dmg.wingLoss(0) * DAMAGE.wingAeroShare, lossR = dmg.wingLoss(1) * DAMAGE.wingAeroShare;
+    const aeroF = (downforce * P.aeroBalance) / 2;
+    const aeroFL = aeroF * (1 - lossL), aeroFR = aeroF * (1 - lossR);
+    const aeroR = downforce * (1 - P.aeroBalance) * da.rear;
+    const drag = qd * P.CdA * da.drag * Math.sign(vx);
+    this.downforce = aeroR + aeroFL + aeroFR;
 
     // vertical loads: weight (less on a slope, more in a dip, less over a crest)
     // + aero + load transfer (from last step's accelerations)
@@ -292,10 +315,10 @@ export class CarPhysics {
     const ax = this.longAccel, ay = this.latAccel;
     const longT = (m * ax * P.cgHeight) / L; // + = onto the rear
     const latT = (m * ay * P.cgHeight) / (2 * D.track); // + = onto the right
-    const front = (m * gN * B_REAR) / L + downforce * P.aeroBalance - longT;
-    const rear = (m * gN * A_FRONT) / L + downforce * (1 - P.aeroBalance) + longT;
+    const front = (m * gN * B_REAR) / L - longT; // mechanical; aero added per side below
+    const rear = (m * gN * A_FRONT) / L + aeroR + longT;
     const latF = latT * P.rollStiffFront, latR = latT * (1 - P.rollStiffFront);
-    const loads = [front / 2 - latF, front / 2 + latF, rear / 2 - latR, rear / 2 + latR];
+    const loads = [front / 2 + aeroFL - latF, front / 2 + aeroFR + latF, rear / 2 - latR, rear / 2 + latR];
 
     // per-wheel load and grip; also what each tyre can take longitudinally,
     // given the cornering force it is already making (friction ellipse)
@@ -307,7 +330,11 @@ export class CarPhysics {
       if (S.bump) fz *= 1 + S.bump * Math.sin((w.dist / S.bumpWavelength) * Math.PI * 2) * Math.min(Math.abs(vx) / 8, 1);
       w.load = fz;
       const c = this.compound;
-      w.grip = c.grip * tempGrip(w.temp, c.tOpt) * (1 - TYRE.dirtGripLoss * w.dirt) * (1 - TYRE.wearGripLoss * w.wear) * (w.front ? 1 : P.rearGrip);
+      w.damage = dmg.tyre[i];
+      w.susp = dmg.suspension[i];
+      w.toe = Math.sign(w.y) * DAMAGE.suspToe * w.susp; // bent arm: the wheel toes out
+      w.grip = c.grip * tempGrip(w.temp, c.tOpt) * (1 - TYRE.dirtGripLoss * w.dirt) * (1 - TYRE.wearGripLoss * w.wear)
+        * (1 - DAMAGE.tyreGripLoss * w.damage) * (1 - DAMAGE.suspGripLoss * w.susp) * (w.front ? 1 : P.rearGrip);
       const peak = peakForce(S, fz) * w.grip;
       const used = peak > 0 ? Math.min(1, Math.abs(w.fy || 0) / peak) : 1;
       w.capX = peak * TYRE.muLongScale * Math.sqrt(Math.max(0.1, 1 - used * used));
@@ -321,7 +348,8 @@ export class CarPhysics {
     if (this.throttle > 0) {
       if (vx >= -0.5) {
         const wheelV = Math.max(wRear * D.rearRadius, 5);
-        axleTorque = this.throttle * Math.min(P.maxAxleTorque, (P.power * P.drivetrainEff * D.rearRadius) / wheelV);
+        const pw = da.power; // engine / gearbox damage, overheating from crushed sidepods
+        axleTorque = this.throttle * pw * Math.min(P.maxAxleTorque, (P.power * P.drivetrainEff * D.rearRadius) / wheelV);
         if (this.tc) axleTorque = Math.min(axleTorque, (W[2].capX + W[3].capX) * D.rearRadius) * this.tcGain;
       } else brakeForce = Math.max(brakeForce, P.maxBrakeForce * 0.5 * this.throttle); // throttle while rolling back = brake
     } else if (wRear > 1) axleTorque = -P.engineBrake;
@@ -340,7 +368,7 @@ export class CarPhysics {
       const fz = w.load, grip = w.grip;
 
       // contact-patch velocity in the wheel frame
-      const delta = w.front ? this.steerAngle : 0;
+      const delta = (w.front ? this.steerAngle : 0) + w.toe;
       const cd = Math.cos(delta), sd = Math.sin(delta);
       const cvx = vx - r * w.y, cvy = vy + r * w.x;
       const wvx = cvx * cd + cvy * sd;
@@ -353,9 +381,9 @@ export class CarPhysics {
       if (!w.front) tDrive = axleTorque / 2 + (i === 2 ? -lsd : lsd);
       const brakeShare = w.front ? P.brakeBias : 1 - P.brakeBias;
       let tBrake = (brakeForce * brakeShare * w.r) / 2;
-      // anti-lock brakes (always on): cap pressure at what this tyre can take,
+      // anti-lock brakes: cap pressure at what this tyre can take,
       // keeping some grip in reserve for cornering while the driver steers
-      if (tBrake > 0) {
+      if (this.abs && tBrake > 0) {
         const reserve = Math.abs(this.steerInput) * (w.front ? P.brakeSteerReserveFront : P.brakeSteerReserveRear);
         const cap = w.capX * w.r * (1 - reserve);
         if (tBrake > cap) {
@@ -371,15 +399,16 @@ export class CarPhysics {
       const eps = 1e-3;
       const f1 = tyreForce(S, kap0 + eps, tanA, fz, grip).fx;
       const dFdOmega = Math.max(0, (f1 - f0) / eps) * (w.r / den);
-      const rollT = S.crr * fz * w.r * Math.tanh(w.omega * w.r / 0.5);
+      const crr = S.crr + DAMAGE.tyreCrr * w.damage + DAMAGE.suspCrr * w.susp;
+      const rollT = crr * fz * w.r * Math.tanh(w.omega * w.r / 0.5);
       const Ieff = I + h * w.r * w.r * dFdOmega;
       let om = w.omega + (h * (tDrive - f0 * w.r - rollT)) / Ieff;
       // brakes oppose rotation but cannot reverse it within a step
       const dB = (tBrake * h) / Ieff;
       if (Math.abs(om) <= dB) om = 0;
       else om -= Math.sign(om) * dB;
-      // the wheels never lock: braking can't slow a wheel past peak-grip slip
-      if (tBrake > 0 && wvx > 0.5) {
+      // with ABS the wheels never lock: braking can't slow a wheel past peak-grip slip
+      if (this.abs && tBrake > 0 && wvx > 0.5) {
         const minOmega = (wvx * (1 - S.peakKappa)) / w.r;
         if (om < minOmega) {
           om = Math.min(minOmega, w.omega + (h * (tDrive - f0 * w.r - rollT)) / Ieff);
@@ -402,7 +431,7 @@ export class CarPhysics {
       if (!w.front && kappa > 0 && tf.slide > 1.1) spin = Math.max(spin, tf.slide);
 
       // rolling resistance acts along the wheel against its motion
-      const fRoll = -S.crr * fz * Math.tanh(wvx / 0.5);
+      const fRoll = -crr * fz * Math.tanh(wvx / 0.5);
       const fxw = tf.fx + fRoll, fyw = tf.fy;
       const fxc = fxw * cd - fyw * sd;
       const fyc = fxw * sd + fyw * cd;
@@ -481,7 +510,7 @@ export class CarPhysics {
   classifyWheels(i0) {
     const T = this.track, pit = T.pit;
     const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
-    const counts = { asphalt: 0, kerb: 0, grass: 0 };
+    const counts = { asphalt: 0, kerb: 0, grass: 0, gravel: 0, sausage: 0 };
     for (const w of this.wheels) {
       const wx = this.position.x + sin * w.x + cos * w.y;
       const wz = this.position.z + cos * w.x - sin * w.y;
@@ -489,12 +518,8 @@ export class CarPhysics {
       const along = (wx - T.px[i0]) * T.tx[i0] + (wz - T.pz[i0]) * T.tz[i0];
       const i = T.wrap(i0 + Math.round(along / T.ds));
       const lat = (wx - T.px[i]) * T.leftX(i) + (wz - T.pz[i]) * T.leftZ(i);
-      const off = Math.abs(lat);
-      let s;
-      if (off <= T.hw) s = 'asphalt';
-      else if (off <= T.hw + KERB_WIDTH && (lat > 0 ? T.kerbL : T.kerbR)[i]) s = 'kerb';
-      else s = 'grass';
-      if (s === 'grass' && pit && this.pitIndex >= 0) {
+      let s = T.surfaceAt(i, lat);
+      if ((s === 'grass' || s === 'gravel') && pit && this.pitIndex >= 0) {
         const j0 = this.pitIndex;
         const a = (wx - pit.px[j0]) * pit.tx[j0] + (wz - pit.pz[j0]) * pit.tz[j0];
         const j = Math.min(Math.max(j0 + Math.round(a / pit.ds), 0), pit.N - 1);
@@ -505,7 +530,8 @@ export class CarPhysics {
       counts[s]++;
     }
     // the car's overall surface: whatever most wheels are on, the worse one on a tie
-    this.surface = counts.grass >= 2 ? 'grass' : counts.kerb >= 2 ? 'kerb' : 'asphalt';
+    this.surface = counts.gravel >= 2 ? 'gravel' : counts.grass + counts.gravel >= 2 ? 'grass'
+      : counts.sausage >= 1 ? 'sausage' : counts.kerb >= 2 ? 'kerb' : 'asphalt';
   }
 
   /** Tread temperature and grass contamination, per wheel. */
@@ -514,7 +540,7 @@ export class CarPhysics {
     for (const w of this.wheels) {
       const heat = TYRE.slipHeat * (w.slipPower || 0) + TYRE.flexHeat * w.load * (w.rollSpeed || 0);
       let cool = (TYRE.coolBase + TYRE.coolSpeed * v) * (w.temp - TYRE.tAmbient);
-      if (w.surface === SURFACES.grass) cool += TYRE.coolGrass * (w.temp - TYRE.tAmbient);
+      if (w.surface === SURFACES.grass || w.surface === SURFACES.gravel) cool += TYRE.coolGrass * (w.temp - TYRE.tAmbient);
       w.temp += ((heat - cool) / TYRE.heatCapacity) * dt;
       const d = (w.rollSpeed || 0) * dt;
       if (w.surface.dirt > 0) w.dirt += (1 - w.dirt) * Math.min(1, w.surface.dirt * d);
@@ -531,7 +557,7 @@ export class CarPhysics {
     const r = 1.1 + WALL_THICKNESS / 2; // half car width-ish + half the wall
     let hit = false;
     for (let iter = 0; iter < 3; iter++) {
-      const c = T.wallContact(p.x, p.z, this.prevPos.x, this.prevPos.z, r);
+      const c = T.wallContact(p.x, p.z, this.prevPos.x, this.prevPos.z, r, this.height);
       if (!c) break;
       hit = true;
       this.wallImpact(-c.nx, -c.nz, c.pen); // normal pointing into the wall
@@ -562,6 +588,11 @@ export class CarPhysics {
       this.vel.z += tz * (nvt - vt);
       this.yawRate *= 0.5; // the impact kills most of the rotation
       this.wallHit = Math.min(1, Math.max(this.wallHit, Math.abs(vr) / 20));
+      // which way the wall faces the car decides which front parts take the hit
+      if (this.damageOn) {
+        const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
+        this.damage.impact(nx * sin + nz * cos, nx * cos - nz * sin, vr);
+      }
     }
   }
 

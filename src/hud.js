@@ -1,6 +1,7 @@
 // DOM-based heads-up display.
 import { formatTime } from './race.js';
 import { COMPOUND_LIST, TYRE } from './tyres.js';
+import { DAMAGE } from './damage.js';
 
 /** Pirelli-style tyre badge: black tyre, compound-coloured ring and letter. */
 function compoundIcon(c) {
@@ -30,8 +31,17 @@ export class Hud {
       tc: document.getElementById('aid-tc'),
       abs: document.getElementById('aid-abs'),
       fitted: document.getElementById('tyre-fitted'),
+      wingChange: document.getElementById('wing-change'),
+      wingChoice: document.getElementById('wing-choice'),
+      wing: [0, 1].map((i) => document.getElementById(`wing-${i}`)),
+      damageMap: document.querySelector('.damage-map'),
+      damageState: document.getElementById('damage-state'),
     };
+    this.damageParts = buildDamageCar(document.getElementById('damage-car'));
     this.onCompound = null; // set by main: (compound) => void
+    this.onWing = null; // set by main: () => void, toggles the wing change
+    this.el.wingChange.addEventListener('mousedown', (e) => e.preventDefault());
+    this.el.wingChange.addEventListener('click', () => this.onWing?.());
     const row = document.getElementById('compounds');
     this.compoundButtons = COMPOUND_LIST.map((c, i) => {
       const b = document.createElement('button');
@@ -102,7 +112,33 @@ export class Hud {
     e.best.textContent = formatTime(timer.best);
     e.cam.textContent = camMode.toUpperCase();
     const dirt = car.wheels.reduce((a, w) => a + w.dirt, 0) / 4;
-    e.surface.textContent = pitText(pitStop, car) ?? (car.inPitLane ? 'PIT LIMITER 80' : car.onPitLane ? 'PIT LANE' : car.surface === 'grass' ? 'OFF TRACK' : dirt > 0.15 ? 'DIRTY TYRES' : '');
+    const dmg = car.damage;
+    const wingHurt = dmg.wingHealth < 0.85;
+    const wingNext = pitStop?.state === 'service' ? pitStop.changingWing : !!pitStop?.nextWing;
+    e.surface.textContent = pitText(pitStop, car) ?? (car.inPitLane ? 'PIT LIMITER 80' : car.onPitLane ? 'PIT LANE' : car.surface === 'gravel' ? 'IN THE GRAVEL' : car.surface === 'grass' ? 'OFF TRACK' : dirt > 0.15 ? 'DIRTY TYRES'
+      : wingHurt && !wingNext ? 'FRONT WING DAMAGED · F: NEW WING AT THE NEXT STOP' : '');
+    // front wing: condition per half, and whether a new one goes on at the next stop
+    dmg.wing.forEach((d, i) => {
+      const el = e.wing[i];
+      const lost = d >= DAMAGE.wingBreak;
+      el.classList.toggle('lost', lost);
+      el.style.background = lost ? '' : damageColor(d / DAMAGE.wingBreak);
+    });
+    // the whole car: every part coloured by its damage, dashed where it has broken off
+    e.damageMap.classList.toggle('off', !car.damageOn);
+    e.damageState.textContent = car.damageOn ? 'DAMAGE' : 'DAMAGE OFF';
+    for (const p of this.damageParts) {
+      const d = p.i === null ? dmg[p.part] : dmg[p.part][p.i];
+      const lost = d >= p.breakAt;
+      const key = lost ? 'lost' : damageColor(d / p.breakAt);
+      if (key === p.key) continue;
+      p.key = key;
+      p.el.classList.toggle('lost', lost);
+      p.el.style[p.el.tagName === 'line' ? 'stroke' : 'fill'] = lost ? '' : key;
+    }
+    e.wingChange.classList.toggle('selected', wingNext);
+    e.wingChange.classList.toggle('needed', wingHurt);
+    e.wingChoice.textContent = wingNext ? 'YES' : 'NO';
     const next = pitStop?.state === 'service' ? pitStop.fitting : pitStop?.nextCompound;
     for (const { c, b } of this.compoundButtons) b.classList.toggle('selected', c === next);
     const comp = car.compound;
@@ -115,8 +151,11 @@ export class Hud {
       // colour by the compound's own window: softs are happy cooler than hards
       el.style.background = tyreColor(w.temp + TYRE.tOpt - comp.tOpt);
       el.classList.toggle('slide', w.slide > 1.05);
-      el.classList.toggle('kerb', w.surface.name === 'kerb');
+      el.classList.toggle('kerb', w.surface.name === 'kerb' || w.surface.name === 'sausage');
       el.classList.toggle('grass', w.surface.name === 'grass');
+      el.classList.toggle('gravel', w.surface.name === 'gravel');
+      el.style.setProperty('--dmg', `${Math.round(w.damage * 100)}%`);
+      el.classList.toggle('damaged', w.damage > 0.5);
     });
     e.tc.classList.toggle('on', car.tc);
     e.tc.classList.toggle('active', car.tc && car.tcActive);
@@ -127,6 +166,7 @@ export class Hud {
       e.flash.textContent = f.text;
       e.flash.classList.add('show');
       e.flash.classList.toggle('best', !!f.best);
+      e.flash.classList.toggle('warn', !!f.warn);
     } else e.flash.classList.remove('show');
   }
 }
@@ -137,9 +177,67 @@ function pitText(p, car) {
   switch (p.state) {
     case 'approach': return `${car.inPitLane ? 'PIT LIMITER 80' : 'PIT LANE'} · YOUR BOX ${Math.round(p.distance)} M`;
     case 'inBox': return 'IN THE BOX · STOP';
-    case 'service': return `PIT STOP ${p.elapsed.toFixed(1)} s · ${p.fitting.name}S`;
+    case 'service': return `PIT STOP ${p.elapsed.toFixed(1)} s · ${p.fitting.name}S${p.changingWing ? ' + FRONT WING' : ''}`;
     default: return null;
   }
+}
+
+/**
+ * Top-view car diagram for the damage panel (nose up, so the car's left is on the left).
+ * Returns the parts: { part, i, el, breakAt } with breakAt the level at which it's gone
+ * (or 1 for parts that only wear down).
+ */
+function buildDamageCar(svg) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const make = (tag, attrs, cls) => {
+    const el = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    if (cls) el.setAttribute('class', cls);
+    svg.appendChild(el);
+    return el;
+  };
+  make('rect', { x: 24, y: 9, width: 12, height: 100, rx: 5 }, 'chassis'); // survival cell: never breaks
+  const parts = [];
+  const part = (part, i, tag, attrs, breakAt = 1) => {
+    const el = make(tag, attrs, 'part');
+    const t = document.createElementNS(NS, 'title');
+    const corner = part === 'tyre' || part === 'suspension';
+    const where = i === null ? '' : `${(corner ? ['left front', 'right front', 'left rear', 'right rear'] : ['left', 'right'])[i]} `;
+    t.textContent = `${where}${{ wing: 'front wing', rearWing: 'rear wing', engine: 'engine / gearbox' }[part] ?? part}`;
+    el.appendChild(t);
+    parts.push({ part, i, el, breakAt, key: null });
+  };
+  for (const i of [0, 1]) {
+    const x = (l, w) => (i === 0 ? l : 60 - l - w); // mirror a left-side x for the right side
+    part('wing', i, 'rect', { x: x(4, 25), y: 3, width: 25, height: 7, rx: 1.5 }, DAMAGE.wingBreak);
+    part('floor', i, 'rect', { x: x(9, 3.5), y: 40, width: 3.5, height: 52, rx: 1 });
+    part('sidepod', i, 'rect', { x: x(14, 10), y: 44, width: 10, height: 32, rx: 3 });
+    part('mirror', i, 'rect', { x: x(15, 6), y: 37, width: 6, height: 3, rx: 1 });
+  }
+  part('engine', null, 'rect', { x: 26, y: 74, width: 8, height: 22, rx: 2 });
+  part('rearWing', null, 'rect', { x: 15, y: 112, width: 30, height: 8, rx: 1.5 }, DAMAGE.rearWingBreak);
+  [0, 1, 2, 3].forEach((c) => {
+    const left = c % 2 === 0, front = c < 2;
+    const y = front ? 26 : 94;
+    part('suspension', c, 'line', { x1: left ? 12 : 36, x2: left ? 24 : 48, y1: y, y2: y });
+    part('tyre', c, 'rect', { x: left ? 3 : 48, y: y - (front ? 9 : 10), width: 9, height: front ? 18 : 20, rx: 2 });
+  });
+  return parts;
+}
+
+/** Damage colour: green intact, through amber, to red about to fall off (d = 0..1). */
+function damageColor(d) {
+  const stops = [[0, [63, 163, 77]], [0.35, [245, 196, 0]], [1, [255, 42, 42]]];
+  const k = Math.min(1, Math.max(0, d));
+  for (let i = 1; i < stops.length; i++) {
+    const [t1, c1] = stops[i];
+    const [t0, c0] = stops[i - 1];
+    if (k <= t1) {
+      const u = (k - t0) / (t1 - t0);
+      return `rgb(${c0.map((c, j) => Math.round(c + (c1[j] - c) * u))})`;
+    }
+  }
+  return `rgb(${stops[stops.length - 1][1]})`;
 }
 
 /** Tread temperature colour: blue cold, green in the window (~100-115 °C), red hot. */

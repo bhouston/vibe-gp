@@ -22,6 +22,7 @@
 // track, plus the pit lane's outer wall and short closing walls at the merges. The
 // car collides against their segments (wallContact), so any layout works.
 import { CatmullRomCurve3, Vector3 } from 'three/webgpu';
+import { RUNOFF } from './tracks/runoff.js';
 
 export const KERB_WIDTH = 1.6;
 export const WALL_THICKNESS = 0.6;
@@ -29,6 +30,13 @@ export const DEFAULT_RUNOFF = 14;
 const KERB_RADIUS = 320; // corners tighter than this get kerbs (m)
 export const TYRE_DEPTH = 2.1; // depth of a tyre barrier stacked against the wall (m)
 const TYRE_RADIUS = 300; // corners tighter than this get tyre barriers on the outside (m)
+// Sections further apart in height than this cross on a bridge (Suzuka's figure of eight):
+// they don't squeeze each other's walls, and their walls don't collide with each other.
+export const GRADE_SEP = 4;
+const BRIDGE_WALL = 3.5; // run-off (m) beside each road where the two cross
+// sausage kerb: a raised yellow strip behind the painted kerb, its inner edge `gap` past
+// the kerb's outer edge (m)
+export const SAUSAGE = { gap: 0.15, width: 0.45, height: 0.11 };
 
 export const PIT = {
   hw: 3.5, // half width of the pit lane's fast lane (m)
@@ -57,6 +65,7 @@ export class TrackPath {
     this.computeWalls();
     this.applyPitWalls();
     this.computeTyreBarriers();
+    this.computeRunoff();
     this.buildWallLines();
     this.buildWallIndex();
   }
@@ -202,6 +211,7 @@ export class TrackPath {
       grid.get(kk).push(i);
     }
     this.overlaps = []; // places where two sections are too close to fit walls
+    this.bridge = new Uint8Array(N); // 1 where this section passes over another
     for (let i = 0; i < N; i++) {
       const cx = Math.floor(this.px[i] / cell), cz = Math.floor(this.pz[i] / cell);
       for (let gx = cx - 1; gx <= cx + 1; gx++) {
@@ -215,6 +225,17 @@ export class TrackPath {
             const sd = Math.abs(i - j) * this.ds;
             const sdist = Math.min(sd, this.length - sd);
             if (sdist < 2 * d + 30) continue; // same local section
+            if (Math.abs(this.py[j] - this.py[i]) > GRADE_SEP) {
+              // a crossing on a bridge: both roads get close walls (parapets above, the
+              // abutments below) for as long as the other road is underneath / overhead
+              if (d < this.hw * 2 + KERB_WIDTH + BRIDGE_WALL) {
+                const lim = this.hw + KERB_WIDTH + BRIDGE_WALL;
+                wl[i] = Math.min(wl[i], lim);
+                wr[i] = Math.min(wr[i], lim);
+                if (this.py[i] > this.py[j]) this.bridge[i] = 1;
+              }
+              continue;
+            }
             const lim = d / 2 - 0.5;
             const side = dx * this.leftX(i) + dz * this.leftZ(i);
             if (side > 0) wl[i] = Math.min(wl[i], lim);
@@ -271,6 +292,11 @@ export class TrackPath {
               // which edge of the lane faces this part of the track
               const facesOuter = Math.sign(-(dx * pit.leftX(j) + dz * pit.leftZ(j))) === pit.outer;
               let lim;
+              if (d < hw + PIT.hw * 0.5) {
+                // the lane overlaps the track (the merge itself): which edge faces it is meaningless
+                (side > 0 ? this.openL : this.openR)[i] = 1;
+                continue;
+              }
               if (!facesOuter) {
                 const gap = d - PIT.hw - hw;
                 if (gap < PIT.wallGap * 0.75) {
@@ -346,6 +372,121 @@ export class TrackPath {
   }
 
   /**
+   * Gravel traps and sausage kerbs from src/tracks/runoff.js (or def.surfaces).
+   * gravelInL/R, gravelOutL/R[i]: lateral band of the gravel on that side (0 = none);
+   * sausageL/R[i]: 1 where a sausage kerb sits just behind the painted kerb.
+   * Gravel starts a strip of grass past the kerb and stops short of the barrier; it is
+   * left out where the run-off is too narrow for it (squeezed walls, pit lane, bridges),
+   * and its inner edge sweeps out to the barrier at each end of a trap.
+   */
+  computeRunoff() {
+    const N = this.N, ds = this.ds, hw = this.hw;
+    const spec = this.def.surfaces ?? RUNOFF[this.def.id] ?? {};
+    this.gravelColor = spec.gravel ?? 0xab9f88;
+    this.gravelInL = new Float32Array(N);
+    this.gravelOutL = new Float32Array(N);
+    this.gravelInR = new Float32Array(N);
+    this.gravelOutR = new Float32Array(N);
+    this.sausageL = new Uint8Array(N);
+    this.sausageR = new Uint8Array(N);
+    this.sausageLat = hw + KERB_WIDTH + SAUSAGE.gap; // inner edge, from the centreline
+    this.runoffWarnings = [];
+    const corners = new Map((this.def.corners ?? []).map((c) => [c.name, c.at]));
+    // centreline sample of an `at`: a corner's control point, or a fraction of the lap
+    const apexOf = (at) => {
+      if (typeof at === 'number') return this.wrap(Math.round(at * N));
+      if (!corners.has(at)) return -1;
+      const [x, y] = this.def.points[corners.get(at)];
+      let best = 0, bd = Infinity;
+      for (let i = 0; i < N; i++) {
+        const d = (this.px[i] - x) ** 2 + (this.pz[i] + y) ** 2;
+        if (d < bd) [bd, best] = [d, i];
+      }
+      return best;
+    };
+    // which way a corner turns: net curvature over 40 m either side (+ = left)
+    const turnOf = (i0) => {
+      let k = 0;
+      for (let d = -Math.round(40 / ds); d <= Math.round(40 / ds); d++) k += this.curvature[this.wrap(i0 + d)];
+      return Math.sign(k);
+    };
+    const sidesOf = (side, i0) => {
+      if (side === 'apexes') return [0]; // per sample: the inside of the turn there
+      if (side === 'L') return [1];
+      if (side === 'R') return [-1];
+      if (side === 'both') return [1, -1];
+      const t = turnOf(i0);
+      return t === 0 ? [] : side === 'out' ? [-t] : [t];
+    };
+    const resolve = (list, each) => {
+      for (const [at, side, from, to] of list ?? []) {
+        const i0 = apexOf(at);
+        if (i0 < 0) {
+          this.runoffWarnings.push(`no corner named "${at}"`);
+          continue;
+        }
+        for (const sgn of sidesOf(side, i0)) each(i0, sgn, Math.round(from / ds), Math.round(to / ds));
+      }
+    };
+
+    const gravelIn = hw + KERB_WIDTH + 1.2; // a strip of grass between the kerb and the stones
+    const taper = Math.max(1, Math.round(10 / ds));
+    resolve(spec.traps, (i0, sgn, a, b) => {
+      const wall = sgn > 0 ? this.wallL : this.wallR, tyre = sgn > 0 ? this.tyreL : this.tyreR;
+      const open = sgn > 0 ? this.openL : this.openR;
+      const pitSide = this.pit && this.pit.side === sgn;
+      const inA = sgn > 0 ? this.gravelInL : this.gravelInR, outA = sgn > 0 ? this.gravelOutL : this.gravelOutR;
+      // longest stretches with room for gravel, each with its own swept ends
+      const room = [];
+      for (let d = a; d <= b; d++) {
+        const i = this.wrap(i0 + d);
+        const outer = wall[i] - (tyre[i] > 0 ? 0.6 : WALL_THICKNESS / 2 + 0.6);
+        room.push(!open[i] && !(pitSide && this.pitWall[i]) && !this.bridge?.[i] && outer - gravelIn >= 3 ? outer : 0);
+      }
+      for (let d0 = 0; d0 < room.length; ) {
+        if (!room[d0]) {
+          d0++;
+          continue;
+        }
+        let d1 = d0;
+        while (d1 + 1 < room.length && room[d1 + 1]) d1++;
+        const len = d1 - d0;
+        if (len * ds >= 12) {
+          for (let d = d0; d <= d1; d++) {
+            const i = this.wrap(i0 + a + d), outer = room[d];
+            const t = Math.min(1, Math.min(d - d0, d1 - d) / taper);
+            const inner = outer - (outer - gravelIn) * (t * t * (3 - 2 * t)) - 0.01;
+            // overlapping entries: keep the widest band
+            if (!outA[i] || inner < inA[i]) inA[i] = inner;
+            outA[i] = Math.max(outA[i], outer);
+          }
+        }
+        d0 = d1 + 1;
+      }
+    });
+    resolve(spec.sausages, (i0, side, a, b) => {
+      for (let d = a; d <= b; d++) {
+        const i = this.wrap(i0 + d), k = this.curvature[i];
+        const sgn = side || (Math.abs(k) > 1 / 150 ? Math.sign(k) : 0);
+        if (!sgn) continue;
+        const wall = sgn > 0 ? this.wallL : this.wallR;
+        if (wall[i] > this.sausageLat + SAUSAGE.width + 1) (sgn > 0 ? this.sausageL : this.sausageR)[i] = 1;
+      }
+    });
+  }
+
+  /** Surface under a point `lat` metres left of the centreline at sample i. */
+  surfaceAt(i, lat) {
+    const off = Math.abs(lat), left = lat > 0;
+    if (off <= this.hw) return 'asphalt';
+    if (off <= this.hw + KERB_WIDTH && (left ? this.kerbL : this.kerbR)[i]) return 'kerb';
+    if ((left ? this.sausageL : this.sausageR)[i] && off >= this.sausageLat && off <= this.sausageLat + SAUSAGE.width) return 'sausage';
+    const gIn = (left ? this.gravelInL : this.gravelInR)[i], gOut = (left ? this.gravelOutL : this.gravelOutR)[i];
+    if (gOut && off >= gIn && off <= gOut) return 'gravel';
+    return 'grass';
+  }
+
+  /**
    * Barrier polylines: { pts: [[x, z, y], ...], closed, render, kind } (y = foot height).
    * Main walls also carry idx (the centreline sample of each point) and side (+1 left).
    * kind: 'main' (track walls incl. the pit wall), 'pit' (lane's outer wall),
@@ -414,7 +555,7 @@ export class TrackPath {
         return false;
       };
       for (const m of ends) {
-        let best = null, bd = 80;
+        let best = null, bd = 150; // long merges (a lane that runs alongside before it joins) need long closing walls
         for (const e of outerEnds) {
           const d = Math.hypot(e[0] - m[0], e[1] - m[1]);
           if (d >= bd || crossesLane(m, e)) continue;
@@ -431,16 +572,16 @@ export class TrackPath {
 
   /** Spatial hash of every wall segment, for collision queries. */
   buildWallIndex() {
-    const ax = [], az = [], bx = [], bz = [];
+    const ax = [], az = [], bx = [], bz = [], ay = [];
     for (const l of this.walls) {
       const n = l.pts.length;
       for (let k = 0; k < (l.closed ? n : n - 1); k++) {
         const a = l.pts[k], b = l.pts[(k + 1) % n];
-        ax.push(a[0]); az.push(a[1]); bx.push(b[0]); bz.push(b[1]);
+        ax.push(a[0]); az.push(a[1]); bx.push(b[0]); bz.push(b[1]); ay.push((a[2] + b[2]) / 2);
       }
     }
     const S = ax.length;
-    this.seg = { ax: Float64Array.from(ax), az: Float64Array.from(az), bx: Float64Array.from(bx), bz: Float64Array.from(bz), n: S };
+    this.seg = { ax: Float64Array.from(ax), az: Float64Array.from(az), bx: Float64Array.from(bx), bz: Float64Array.from(bz), ay: Float64Array.from(ay), n: S };
     this.segCell = 10;
     this.segGrid = new Map();
     for (let s = 0; s < S; s++) {
@@ -463,8 +604,10 @@ export class TrackPath {
    * Deepest wall contact for a circle of radius r that moved from (px, pz) to (x, z).
    * Returns { nx, nz, pen } (unit normal from the wall towards the side the circle
    * came from, and how far to push it out) or null. Moving through a wall counts.
+   * y (optional): the road height under the circle; walls of a section on another level
+   * (a bridge overhead or the road below it) are ignored.
    */
-  wallContact(x, z, px, pz, r) {
+  wallContact(x, z, px, pz, r, y = null) {
     const c = this.segCell, S = this.seg;
     const tick = ++this.segTick;
     const x0 = Math.floor((Math.min(x, px) - r) / c), x1 = Math.floor((Math.max(x, px) + r) / c);
@@ -477,6 +620,7 @@ export class TrackPath {
         for (const s of list) {
           if (this.segStamp[s] === tick) continue;
           this.segStamp[s] = tick;
+          if (y !== null && Math.abs(S.ay[s] - y) > GRADE_SEP) continue;
           const ax = S.ax[s], az = S.az[s];
           const ex = S.bx[s] - ax, ez = S.bz[s] - az;
           const len2 = ex * ex + ez * ez;

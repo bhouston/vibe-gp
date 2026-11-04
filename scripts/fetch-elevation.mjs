@@ -24,6 +24,7 @@
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { TRACKS } from '../src/tracks/index.js';
 import { TrackPath } from '../src/trackPath.js';
+import { CIRCUITS } from './circuits.mjs';
 
 // Per-track source, filtering and real-life references.
 const SOURCES = {
@@ -50,6 +51,9 @@ const SOURCES = {
     median: 0, tol: 0.15, checkRange: 5.2,
   },
 };
+// circuits imported by scripts/import-track.mjs keep their elevation settings in scripts/circuits.mjs
+// (`elevation: { dataset | provider, label, median, tol, range | checkRange | maxRange, features }`)
+for (const [cid, c] of Object.entries(CIRCUITS)) if (c.elevation) SOURCES[cid] = c.elevation;
 const SAMPLE = 10; // m between lookups
 const STORE = 20; // m between stored heights
 
@@ -111,7 +115,7 @@ async function openTopoData(dataset) {
  * itself, robust to the odd kerb, drain or missing pixel.
  * A tile fetcher returns { get(i, j), w, h, lonAt(i), latAt(j) } with NaN for no data.
  */
-const ROAD_R = 3.5;
+const ROAD_R = +(process.env.ROAD_R ?? 3.5);
 async function lidar(tileDeg, fetchTile) {
   const [tLat, tLon] = tileDeg;
   const tiles = new Map();
@@ -204,6 +208,39 @@ async function nrcanHrdem() {
   });
 }
 
+/**
+ * Japan: GSI (Geospatial Information Authority of Japan) DEM5A, the 5 m grid from airborne
+ * laser survey, served as 256 px CSV tiles at zoom 15 (~3.9 m pixels at Suzuka's latitude).
+ * Each lidar() box is mosaicked from the XYZ tiles it touches ('e' = no data).
+ */
+async function gsiDem5a() {
+  const z = 15, N = 2 ** z * 256; // global pixels across at this zoom
+  const px = (lo) => ((lo + 180) / 360) * N;
+  const py = (la) => ((1 - Math.log(Math.tan(Math.PI / 4 + (la * d2r) / 2)) / Math.PI) / 2) * N;
+  const lonOf = (x) => (x / N) * 360 - 180;
+  const latOf = (y) => (2 * Math.atan(Math.exp(Math.PI * (1 - (2 * y) / N))) - Math.PI / 2) / d2r;
+  return lidar([0.002, 0.002], async ([la0, lo0, la1, lo1]) => {
+    const x0 = Math.floor(px(lo0)), x1 = Math.ceil(px(lo1)), y0 = Math.floor(py(la1)), y1 = Math.ceil(py(la0));
+    const tiles = new Map();
+    for (let ty = y0 >> 8; ty <= y1 >> 8; ty++) {
+      for (let tx = x0 >> 8; tx <= x1 >> 8; tx++) {
+        const url = `https://cyberjapandata.gsi.go.jp/xyz/dem5a/${z}/${tx}/${ty}.txt`;
+        const buf = await cached(`gsi-dem5a-${z}-${tx}-${ty}`, 'txt', () => fetchRetry(url, 'text'));
+        tiles.set(`${tx},${ty}`, buf.toString().trim().split('\n').map((l) => l.split(',').map((v) => (v.trim() === 'e' ? NaN : +v))));
+      }
+    }
+    return {
+      w: x1 - x0, h: y1 - y0,
+      get: (i, j) => {
+        const gx = x0 + i, gy = y0 + j;
+        return tiles.get(`${gx >> 8},${gy >> 8}`)?.[gy & 255]?.[gx & 255] ?? NaN;
+      },
+      lonAt: (i) => lonOf(x0 + i + 0.5),
+      latAt: (j) => latOf(y0 + j + 0.5),
+    };
+  });
+}
+
 /** Minimal GeoTIFF reader: one band, float32, uncompressed, strips or tiles. */
 function readGeoTiff(buf) {
   const le = buf.toString('ascii', 0, 2) === 'II';
@@ -236,11 +273,43 @@ function readGeoTiff(buf) {
   return { w, h, get, sx, sy, ox: tie[3] - tie[0] * sx, oy: tie[4] + tie[1] * sy };
 }
 
-const raw = src.provider === 'ea-lidar' ? await eaLidar() : src.provider === 'nrcan-hrdem' ? await nrcanHrdem() : await openTopoData(src.dataset);
+const raw0 = src.provider === 'ea-lidar' ? await eaLidar() : src.provider === 'nrcan-hrdem' ? await nrcanHrdem() : src.provider === 'gsi-dem5a' ? await gsiDem5a() : await openTopoData(src.dataset);
 console.log();
+if (process.env.DUMP) writeFileSync(process.env.DUMP, JSON.stringify(raw0));
+// No-data points (eudem25m has none over the sea) and `gaps` (lap metres [from, to] where the DEM
+// shows something other than the road surface: tunnels, bridges) are bridged by straight lines
+// between the data on either side.
+const valid = raw0.map((v, k) => Number.isFinite(v) && !(src.gaps ?? []).some(([a, b]) => k * SAMPLE >= a && k * SAMPLE <= b));
+if (!valid.some(Boolean)) throw new Error('no elevation data');
+const raw = raw0.map((v, k) => {
+  if (valid[k]) return v;
+  let a = 1, b = 1;
+  while (!valid[(k - a + n) % n]) a++;
+  while (!valid[(k + b) % n]) b++;
+  return (raw0[(k - a + n) % n] * b + raw0[(k + b) % n] * a) / (a + b);
+});
 
 // filter around the closed loop
 const at = (arr, i) => arr[((i % n) + n) % n];
+// `notches: { maxLen, depth }`: bare-earth LiDAR removes bridge decks, so where the track
+// crosses over a tunnel or another road the profile drops into a short, steep-sided notch
+// (the ground underneath). Any run up to maxLen metres lying more than `depth` below the
+// straight line across it is replaced by that line: the deck.
+if (src.notches) {
+  const { maxLen = 60, depth = 1.5 } = src.notches;
+  const W = Math.round(maxLen / SAMPLE);
+  for (let a = 0; a < n; a++) {
+    for (let w = W; w >= 1; w--) {
+      const y0 = at(raw, a), y1 = at(raw, a + w + 1);
+      let ok = true;
+      for (let k = 1; k <= w && ok; k++) ok = y0 + ((y1 - y0) * k) / (w + 1) - at(raw, a + k) > depth;
+      if (!ok) continue;
+      for (let k = 1; k <= w; k++) raw[(a + k) % n] = y0 + ((y1 - y0) * k) / (w + 1);
+      console.log(`deck over a notch at s=${(a + 1) * SAMPLE}..${(a + w) * SAMPLE} (${w * SAMPLE} m)`);
+      break;
+    }
+  }
+}
 let h = raw;
 if (src.median > 0) {
   const r = Math.round(src.median / SAMPLE / 2);
@@ -283,7 +352,13 @@ const slope = (arr, i) => (at(arr, i + 1) - at(arr, i - 1)) / (2 * SAMPLE);
 const dataRange = range(h);
 if (src.checkRange) console.log(`range ${dataRange.toFixed(2)} m from the data, ${src.checkRange} m published (F1)`);
 
-// calibrate the total climb to the published figure
+// calibrate the total climb to the published figure (maxRange: only ever scale down to it,
+// for flat circuits with no published figure where the DEM's noise adds false hills)
+if (src.maxRange && dataRange > src.maxRange) {
+  const mean = h.reduce((s, v) => s + v, 0) / n, k = src.maxRange / dataRange;
+  h = h.map((v) => mean + (v - mean) * k);
+  console.log(`scaled down from ${dataRange.toFixed(1)} m to the ${src.maxRange} m cap`);
+}
 if (src.range) {
   const mean = h.reduce((s, v) => s + v, 0) / n, k = src.range / dataRange;
   h = h.map((v) => mean + (v - mean) * k);
@@ -326,6 +401,40 @@ for (const f of src.features ?? []) {
   console.log(`${f.name}: ${dh.toFixed(1)} m over ${L} m, peak grade ${(peak * 100).toFixed(1)}% (terrain data ${(dataPeak * 100).toFixed(1)}%)`);
 }
 
+// bridges: where the centreline crosses itself (Suzuka), make sure the upper road clears
+// the lower one. The DEM is bare earth (bridges removed), so it only knows the ground.
+// `bridge: { clearance, upper: 'later' | 'earlier', blend, lowerShare }`: road-to-road height
+// at the crossing, which pass is on top, over how many metres each side the change is eased
+// in, and how much of it the lower road takes (default half).
+if (src.bridge) {
+  const { clearance, upper = 'later', blend = 300, lowerShare = 0.5 } = src.bridge;
+  const segX = (i, j) => {
+    const a = (k) => [P.px[k % P.N], P.pz[k % P.N]];
+    const [p1, p2, p3, p4] = [a(i), a(i + 1), a(j), a(j + 1)];
+    const d = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    return d(p1, p2, p3) * d(p1, p2, p4) < 0 && d(p3, p4, p1) * d(p3, p4, p2) < 0;
+  };
+  for (let i = 0; i < P.N; i++) {
+    for (let j = i + 20; j < P.N; j++) {
+      if (P.N - j + i < 20 || !segX(i, j)) continue;
+      const si = i * P.ds, sj = j * P.ds;
+      const [sUp, sLo] = upper === 'later' ? [sj, si] : [si, sj];
+      const iu = Math.round(sUp / SAMPLE), il = Math.round(sLo / SAMPLE);
+      const gap = at(h, iu) - at(h, il);
+      const need = clearance - gap;
+      const r = Math.round(blend / SAMPLE);
+      if (need > 0) {
+        for (let k = -r; k <= r; k++) {
+          const w = 0.5 * (1 + Math.cos((Math.PI * k) / r)) * need;
+          h[(((iu + k) % n) + n) % n] += w * (1 - lowerShare);
+          h[(((il + k) % n) + n) % n] -= w * lowerShare;
+        }
+      }
+      console.log(`bridge at s=${sUp.toFixed(0)} over s=${sLo.toFixed(0)}: ${gap.toFixed(1)} m apart in the data, ${Math.max(gap, clearance).toFixed(1)} m after`);
+    }
+  }
+}
+
 const m = Math.round(P.length / STORE);
 const out = [];
 for (let k = 0; k < m; k++) {
@@ -343,8 +452,8 @@ writeFileSync(
   `// Generated by scripts/fetch-elevation.mjs: do not edit by hand.
 // ${def.name} centreline height above sea level (m), evenly spaced around the lap from the
 // start line (about every ${STORE} m), in the racing direction.
-// Source: ${src.label}${src.provider ? ', road-surface median within ' + ROAD_R + ' m of the centreline' : ' via OpenTopoData'}, sampled every ${SAMPLE} m${src.median ? `, ${src.median} m median filter` : ''}, smoothest profile within ±${src.tol} m of the data${src.smooth ? `, smoothed (sigma ${src.smooth} m)` : ''}.
-// ${src.range ? `Calibrated to real-life figures: total range ${src.range} m (data ${dataRange.toFixed(1)} m)` : `Not calibrated: data range ${dataRange.toFixed(1)} m${src.checkRange ? ` (published ${src.checkRange} m)` : ''}`}${(src.features ?? []).map((f) => `; ${f.name} peak gradient ${f.peakGrade * 100}%`).join('')}.
+// Source: ${src.label}${src.provider ? ', road-surface median within ' + ROAD_R + ' m of the centreline' : ' via OpenTopoData'}, sampled every ${SAMPLE} m${src.gaps ? `, bridged over ${src.gaps.map(([a, b]) => `${a}-${b} m`).join(', ')}` : ''}${src.median ? `, ${src.median} m median filter` : ''}, smoothest profile within ±${src.tol} m of the data${src.smooth ? `, smoothed (sigma ${src.smooth} m)` : ''}.
+// ${src.range ? `Calibrated to real-life figures: total range ${src.range} m (data ${dataRange.toFixed(1)} m)` : src.maxRange && dataRange > src.maxRange ? `Scaled down to a ${src.maxRange} m range (data ${dataRange.toFixed(1)} m)` : `Not calibrated: data range ${dataRange.toFixed(1)} m${src.checkRange ? ` (published ${src.checkRange} m)` : ''}`}${(src.features ?? []).map((f) => `; ${f.name} peak gradient ${f.peakGrade * 100}%`).join('')}${src.bridge ? `; roads ${src.bridge.clearance} m apart where they cross` : ''}.
 // Range ${lo} .. ${hi} m.
 export default [
 ${rows.join('\n')}

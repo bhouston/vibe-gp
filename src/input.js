@@ -10,11 +10,9 @@ export class Input {
   constructor() {
     this.down = new Set();
     this.pressed = new Set(); // one-shot presses, cleared each frame
-    this.assists = { tc: true }; // T toggles traction, stability and steering assists
     addEventListener('keydown', (e) => {
       if (Object.values(KEYS).flat().includes(e.code)) e.preventDefault();
       if (!e.repeat) this.pressed.add(e.code);
-      if (!e.repeat && e.code === 'KeyT') this.assists.tc = !this.assists.tc;
       this.down.add(e.code);
     });
     addEventListener('keyup', (e) => this.down.delete(e.code));
@@ -39,7 +37,6 @@ export class Input {
       throttle: this.is('throttle') ? 1 : 0,
       brake: this.is('brake') ? 1 : 0,
       steer: (this.is('left') ? 1 : 0) - (this.is('right') ? 1 : 0),
-      tc: this.assists.tc,
     };
   }
 }

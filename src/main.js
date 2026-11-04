@@ -8,14 +8,21 @@ import { Input } from './input.js';
 import { CameraRig } from './camera.js';
 import { LapTimer, formatTime } from './race.js';
 import { Hud } from './hud.js';
-import { skyNode } from './materials.js';
+import { Settings } from './settings.js';
+import { skyNode, nightSkyNode } from './materials.js';
+import { setFloodMask, nightU, FloodlightPool } from './night.js';
 import { TEAMS, teamById, teamCarSvg, teamGarage } from './teams.js';
 import { BoxMarker } from './boxMarker.js';
 import { PitStop } from './pitStop.js';
 import { PitCrews } from './pitCrew.js';
 import { COMPOUND_LIST } from './tyres.js';
+import { DAMAGE } from './damage.js';
 
 const SUN_DIR = [0.45, 0.8, 0.35];
+// Night races: the key light is the floodlights, nearly overhead (short shadows under the
+// car, the way an evenly floodlit circuit looks), and a moon low in the sky.
+const FLOOD_DIR = [0.12, 1, 0.18];
+const MOON_DIR = [-0.5, 0.35, -0.6];
 
 const bestKey = (id) => `vibegp.best.${id}`;
 function loadBest(id) {
@@ -81,20 +88,39 @@ async function start() {
   document.getElementById('backend').textContent = backend;
 
   const scene = new THREE.Scene();
-  scene.backgroundNode = skyNode(SUN_DIR);
-  // aerial perspective: exponential haze in the sky's horizon colour, so distant hills
-  // and woods fade into the sky (~40% at 1 km, ~85% at 2 km) instead of ending at a line
-  scene.fog = new THREE.FogExp2(0xcadfee, 0.0007);
   // Image-based lighting: the prefiltered sky dome is the main light for every surface
   // (diffuse irradiance + glossy reflections). The sun disc is left out of the environment;
   // the directional light below supplies it instead, so it can cast shadows without being
-  // counted twice.
-  const envScene = new THREE.Scene();
-  envScene.backgroundNode = skyNode(SUN_DIR, { sunDisc: false });
+  // counted twice. One environment for day races and one for night races.
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(envScene, 0.0, 0.1, 100, { size: 512 }).texture;
-  scene.environmentIntensity = 1.0;
+  const envOf = (node) => {
+    const envScene = new THREE.Scene();
+    envScene.backgroundNode = node;
+    return pmrem.fromScene(envScene, 0.0, 0.1, 100, { size: 512 }).texture;
+  };
+  const ATMOSPHERE = {
+    day: {
+      sky: skyNode(SUN_DIR),
+      env: envOf(skyNode(SUN_DIR, { sunDisc: false })),
+      envIntensity: 1.0,
+      // aerial perspective: exponential haze in the sky's horizon colour, so distant hills
+      // and woods fade into the sky (~40% at 1 km, ~85% at 2 km) instead of ending at a line
+      fog: [0xcadfee, 0.0007],
+      key: { dir: SUN_DIR, color: 0xfff2dd, intensity: 2.2 },
+      exposure: 1.0,
+    },
+    night: {
+      sky: nightSkyNode(MOON_DIR),
+      env: envOf(nightSkyNode(MOON_DIR, { stars: false })),
+      envIntensity: 1.0,
+      // dark haze: the unlit land beyond the floodlights melts into the night
+      fog: [0x0a0d15, 0.0008],
+      key: { dir: FLOOD_DIR, color: 0xf4f6ff, intensity: 1.8 },
+      exposure: 1.05,
+    },
+  };
   pmrem.dispose();
+  scene.fog = new THREE.FogExp2(0xcadfee, 0.0007);
 
   const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 4000);
   camera.layers.enable(MIRROR_LAYER); // mirror glass is only drawn by the main view
@@ -107,6 +133,24 @@ async function start() {
   sun.shadow.bias = -0.0005;
   sun.shadow.normalBias = 0.02;
   scene.add(sun, sun.target);
+  let keyDir = SUN_DIR;
+  // point lights at the floodlight towers nearest the camera (night races only)
+  const floods = new FloodlightPool();
+  scene.add(floods.group);
+
+  function setAtmosphere(night) {
+    const a = night ? ATMOSPHERE.night : ATMOSPHERE.day;
+    scene.backgroundNode = a.sky;
+    scene.environment = a.env;
+    scene.environmentIntensity = a.envIntensity;
+    scene.fog.color.setHex(a.fog[0]);
+    scene.fog.density = a.fog[1];
+    sun.color.setHex(a.key.color);
+    sun.intensity = a.key.intensity;
+    keyDir = a.key.dir;
+    renderer.toneMappingExposure = a.exposure;
+    nightU.value = night ? 1 : 0;
+  }
 
   const input = new Input();
   const rig = new CameraRig(camera);
@@ -126,13 +170,72 @@ async function start() {
     pitStop.nextCompound = c;
   };
   hud.onCompound = pickCompound;
+  // front wing change at the next stop: key F in the race, or click the HUD button
+  const toggleWing = () => {
+    pitStop.nextWing = !pitStop.nextWing;
+  };
+  hud.onWing = toggleWing;
+  // driver aids and collision damage: toggled in the settings panel (gear, top right)
+  const settings = new Settings();
+  /** Push the saved settings onto the car physics (a new track makes a new CarPhysics). */
+  const applySettings = () => {
+    physics.tc = settings.get('tc');
+    physics.abs = settings.get('abs');
+    physics.damageOn = settings.get('damage');
+  };
+  const SETTING_NAMES = { tc: 'TRACTION CONTROL', abs: 'ABS', damage: 'DAMAGE' };
+  settings.onChange = (id, on) => {
+    if (!physics) return;
+    applySettings();
+    // switching damage off also repairs the car, and clears the bits it left on the track
+    if (id === 'damage' && !on) {
+      physics.damage.reset();
+      car.clearDebris();
+    }
+    timer.flash = { text: `${SETTING_NAMES[id]} ${on ? 'ON' : 'OFF'}`, until: timer.time + 1.5 };
+  };
 
   /** Animate the pit crews, then draw the car (on the jacks / wheels off mid stop). */
   function syncCar(dt) {
     crews.update(dt, performance.now() / 1000, pitStop, physics, teamGarage(car.team));
     car.update(physics, dt, crews.lift);
+    car.setWing(physics.damage, crews.wingMode, physics);
+    car.setDamage(physics.damage, physics, dt);
+    car.setWingProps(crews.wingProps);
+    car.updateDebris(dt);
     car.setCompound(crews.carCompound ?? physics.compound);
     crews.wheelOn.forEach((on, i) => car.setWheelVisible(i, on));
+  }
+
+  /**
+   * A big warning for the worst thing a hit broke (physics.damage.events since last
+   * time): parts falling off first, then the things that hurt the car most.
+   */
+  function damageFlash() {
+    const dmg = physics.damage;
+    const ev = dmg.events;
+    if (!ev.length) return;
+    const SIDE = ['LEFT', 'RIGHT'], CORNER = ['LEFT-FRONT', 'RIGHT-FRONT', 'LEFT-REAR', 'RIGHT-REAR'];
+    const crossed = (part, level) => ev.find((e) => e.part === part && e.before < level && e.level >= level);
+    const grew = (part, by) => ev.find((e) => e.part === part && e.level - e.before >= by);
+    const rules = [
+      () => crossed('wing', DAMAGE.wingBreak) && (dmg.broken(0) && dmg.broken(1) ? 'FRONT WING GONE' : `${SIDE[crossed('wing', DAMAGE.wingBreak).side]} FRONT WING BROKEN`),
+      () => crossed('rearWing', DAMAGE.rearWingBreak) && 'REAR WING GONE',
+      () => crossed('suspension', 0.6) && `${CORNER[crossed('suspension', 0.6).side]} SUSPENSION BROKEN`,
+      () => crossed('engine', 0.5) && 'ENGINE DAMAGE · LOSING POWER',
+      () => crossed('tyre', 0.5) && `${CORNER[crossed('tyre', 0.5).side]} TYRE DAMAGED`,
+      () => crossed('mirror', 1) && `${SIDE[crossed('mirror', 1).side]} MIRROR GONE`,
+      () => crossed('floor', 0.4) && 'FLOOR DAMAGE',
+      () => crossed('sidepod', 0.4) && `${SIDE[crossed('sidepod', 0.4).side]} SIDEPOD DAMAGED`,
+      () => grew('suspension', 0.15) && 'SUSPENSION DAMAGE',
+      () => grew('rearWing', 0.15) && 'REAR WING DAMAGE',
+      () => grew('wing', 0.1) && 'FRONT WING DAMAGE',
+      () => grew('engine', 0.15) && 'ENGINE DAMAGE',
+    ];
+    let text = null;
+    for (const r of rules) if ((text = r())) break;
+    ev.length = 0;
+    if (text) timer.flash = { text, until: timer.time + 2.2, warn: true };
   }
 
   /** Point the pit stop logic and the minimap at the player's team's box on this track. */
@@ -146,11 +249,11 @@ async function start() {
   function setTeam(team) {
     if (car?.team.id === team.id) return;
     if (car) {
-      scene.remove(car.group);
+      scene.remove(car.group, car.debris);
       car.dispose();
     }
     car = new Car(team);
-    scene.add(car.group);
+    scene.add(car.group, car.debris);
     if (physics) car.update(physics, 0);
     saveTeam(team.id);
     setUrlParams({ team: team.id });
@@ -168,7 +271,12 @@ async function start() {
     track = new Track(def);
     crews = new PitCrews(track.path.pit);
     scene.add(track.group, crews.group);
+    setAtmosphere(!!def.night);
+    setFloodMask(track.floodMask ?? null);
+    floods.setHeads(track.floodHeads);
     physics = new CarPhysics(track.path, track.path.gridPose(0));
+    applySettings();
+    car.clearDebris();
     rig.tvCams = track.tvCams;
     rig.track = track.path;
     rig.initialised = false;
@@ -180,10 +288,12 @@ async function start() {
 
   function resetCar() {
     physics.reset(track.path.gridPose(0));
+    applySettings(); // reset() puts the aids back to their defaults
     const best = timer.best;
     timer.reset();
     timer.best = best;
     pitStop.reset();
+    car.clearDebris();
     rig.initialised = false;
   }
 
@@ -246,11 +356,13 @@ async function start() {
       if (input.hit('KeyC')) rig.next();
       if (input.hit('KeyR')) resetCar();
       COMPOUND_LIST.forEach((c, i) => input.hit(`Digit${i + 1}`) && pickCompound(c));
+      if (input.hit('KeyF')) toggleWing();
 
       acc += dt;
       const controls = input.state;
       while (acc >= FIXED) {
         physics.step(pitStop.update(physics, controls, FIXED), FIXED);
+        damageFlash();
         if (pitStop.released) timer.flash = { text: `PIT STOP ${pitStop.lastStop.toFixed(1)} s`, until: timer.time + 2.5 };
         const prevBest = timer.best;
         timer.update(physics.trackS, track.path.length, FIXED);
@@ -268,13 +380,14 @@ async function start() {
     // keep the shadow frustum centred on the car
     const p = physics.position;
     const py = physics.height;
-    sun.position.set(p.x + SUN_DIR[0] * 100, py + SUN_DIR[1] * 100, p.z + SUN_DIR[2] * 100);
+    sun.position.set(p.x + keyDir[0] * 100, py + keyDir[1] * 100, p.z + keyDir[2] * 100);
     sun.target.position.set(p.x, py, p.z);
+    floods.update(camera.position);
 
     boxMarker.update(dt, pitStop, !menu.visible);
     hud.update(physics, timer, rig.mode, pitStop);
     if (import.meta.env.DEV) {
-      window.__game = { physics, timer, track, pitStop, crews, loadTrack, TRACKS, menu, car, setTeam, TEAMS, scene, sun };
+      window.__game = { physics, timer, track, pitStop, crews, loadTrack, TRACKS, menu, car, setTeam, TEAMS, scene, sun, floods, renderer };
       // automated screenshots can pin the camera: window.__fixedCam = { x, y, z, tx, ty, tz }
       const fc = window.__fixedCam;
       if (fc) {
@@ -293,7 +406,7 @@ async function start() {
   });
 }
 
-/** Full-screen menu: a row of team cards above a row of circuit cards. */
+/** Full-screen two-step menu: pick a car (team), Next, then pick a circuit and GO. */
 class Menu {
   constructor(teams, tracks, team, { onTeam, onTrack }) {
     this.teams = teams;
@@ -340,19 +453,40 @@ class Menu {
           <path d="${path.svgPath(3)}" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linejoin="round"/>
           <circle cx="${start.x}" cy="${start.z}" r="${sw * 1.1}" fill="#e10600"/>
         </svg>
-        <div class="track-name">${def.name}</div>
+        <div class="track-name">${def.name}${def.night ? ' <span class="night-tag">Night</span>' : ''}</div>
         <div class="track-meta">${def.country} · ${(path.length / 1000).toFixed(3)} km${path.elevationRange >= 1 ? ` · ${path.elevationRange.toFixed(0)} m elevation change` : ''}</div>
         <div class="track-best">Best <span>${formatTime(loadBest(def.id))}</span></div>`;
-      card.addEventListener('click', () => this.onTrack(def));
-      card.addEventListener('mouseenter', () => this.focus('track', i));
+      card.addEventListener('click', () => this.focus('track', i));
+      card.addEventListener('dblclick', () => this.go());
       this.rows.track.appendChild(card);
       return card;
     });
+
+    this.steps = {
+      team: document.getElementById('step-team'),
+      track: document.getElementById('step-track'),
+    };
+    document.getElementById('btn-next').addEventListener('click', () => this.setStep('track'));
+    document.getElementById('btn-back').addEventListener('click', () => this.setStep('team'));
+    document.getElementById('btn-go').addEventListener('click', () => this.go());
 
     this.selectedTeam = Math.max(0, teams.findIndex((t) => t.id === team.id));
     this.focus('track', 0);
     this.focus('team', this.selectedTeam);
     this.markTeam();
+    this.setStep('team');
+  }
+
+  /** Show one step of the menu: 'team' (pick a car) or 'track' (pick a circuit, then GO). */
+  setStep(step) {
+    document.activeElement?.blur?.(); // so Enter/Space don't also re-click the button that was just pressed
+    for (const [name, el] of Object.entries(this.steps)) el.hidden = name !== step;
+    this.focus(step, step === 'team' ? this.selectedTeam : this.index.track);
+    this.el.scrollTop = 0;
+  }
+
+  go() {
+    this.onTrack(this.tracks[this.index.track]);
   }
 
   get visible() {
@@ -366,7 +500,7 @@ class Menu {
   show(currentId) {
     const i = this.tracks.findIndex((t) => t.id === currentId);
     if (i >= 0) this.focus('track', i);
-    this.focus('team', this.selectedTeam);
+    this.setStep('team');
     this.el.hidden = false;
     document.getElementById('hud').classList.add('menu-open');
   }
@@ -402,10 +536,13 @@ class Menu {
   }
 
   handleKeys(input) {
-    if (input.hit('ArrowDown') || input.hit('KeyS')) this.focus('track', this.index.track);
-    if (input.hit('ArrowUp') || input.hit('KeyW')) this.focus('team', this.index.team);
     const onTeams = this.row === 'team';
-    const step = (input.hit('ArrowRight') || input.hit('KeyD') ? 1 : 0) - (input.hit('ArrowLeft') || input.hit('KeyA') ? 1 : 0);
+    if (!onTeams && (input.hit('Backspace') || input.hit('Escape'))) {
+      this.setStep('team');
+      return;
+    }
+    const step = (input.hit('ArrowRight') || input.hit('KeyD') || input.hit('ArrowDown') || input.hit('KeyS') ? 1 : 0)
+      - (input.hit('ArrowLeft') || input.hit('KeyA') || input.hit('ArrowUp') || input.hit('KeyW') ? 1 : 0);
     if (step) {
       if (onTeams) this.pickTeam(this.index.team + step);
       else this.focus('track', this.index.track + step);
@@ -417,8 +554,8 @@ class Menu {
       else this.focus('track', k);
     }
     if (input.hit('Enter') || input.hit('Space')) {
-      if (onTeams) this.focus('track', this.index.track); // team confirmed: move on to circuits
-      else this.onTrack(this.tracks[this.index.track]);
+      if (onTeams) this.setStep('track'); // car confirmed: move on to circuits
+      else this.go();
     }
   }
 }
