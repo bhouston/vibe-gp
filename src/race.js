@@ -54,6 +54,46 @@ export class LapTimer {
   }
 }
 
+const RED_STEP = 0.6; // s between each red coming on
+const GREEN_AT = 3.6; // s after the reset: all five turn green and the car is let go
+const GREEN_FOR = 3; // s the green stays on before the gantry goes dark
+const RED = 0xff1a1a, GREEN = 0x00ff30;
+
+/** The start sequence on the gantry lamps (materials from Track); holds the car until green. */
+export class StartLights {
+  reset(lamps) {
+    this.lamps = lamps;
+    this.time = 0;
+    this.paint();
+  }
+
+  get holding() {
+    return this.time < GREEN_AT;
+  }
+
+  /** How far the sequence has got: the number of reds lit, then 6 once it is green. */
+  get step() {
+    return this.holding ? Math.floor(this.time / RED_STEP) : 6;
+  }
+
+  update(dt) {
+    const before = this.step;
+    this.time += dt;
+    this.paint();
+    if (this.step !== before) this.onStep?.(!this.holding);
+  }
+
+  paint() {
+    const reds = this.holding ? this.step : 0;
+    const green = !this.holding && this.time < GREEN_AT + GREEN_FOR;
+    this.lamps.forEach((lamp, i) => {
+      // the lamps run right to left from the driver's seat: fill from the driver's left
+      lamp.emissive.setHex(green ? GREEN : i >= 5 - reds ? RED : 0x000000);
+      lamp.emissiveIntensity = green ? 0.7 : 0.5; // any brighter and the tone mapping bleaches them
+    });
+  }
+}
+
 export function formatTime(t) {
   if (t === null || t === undefined) return '--:--.---';
   const m = Math.floor(t / 60);

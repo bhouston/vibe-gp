@@ -289,6 +289,10 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
   overflow-y: auto;
 }
 #menu[hidden] { display: none; }
+/* before the first track: the car stands in the clear gap between the title and the cards */
+#menu.showroom:has(#step-team:not([hidden])) { background: linear-gradient(to bottom, transparent 35%, rgba(8, 10, 16, 0.88) 60%); }
+#menu.showroom:has(#step-team:not([hidden])) h1 { margin-bottom: auto; }
+#menu.showroom:has(#step-track:not([hidden])) { background: #080a10; }
 #menu h1 { margin: 0; font-size: 56px; font-weight: 900; letter-spacing: 0.08em; font-style: italic; }
 #menu h1 span { color: #e10600; }
 #menu .sub { margin: 14px 0 6px; color: #9aa3b5; letter-spacing: 0.25em; text-transform: uppercase; font-size: 13px; }
@@ -368,6 +372,80 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
 .team-card.selected .team-name::after { content: ' ✓'; color: var(--c3); }
 .menu-row.active .focused { transform: translateY(-4px); box-shadow: 0 0 0 2px #fff; }
 .menu-row:not(.active) .track-card.focused { transform: none; }
+
+/* ---- touch devices: on-screen controls (src/touch.js) and a compact HUD ---- */
+#touch, #rotate { display: none; }
+#touch { position: absolute; inset: 0; --l: max(12px, env(safe-area-inset-left)); --r: max(12px, env(safe-area-inset-right)); --b: max(12px, env(safe-area-inset-bottom)); }
+#touch-steer, #touch button {
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  color: #fff;
+  font: inherit;
+  font-weight: 800;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-radius: 14px;
+  background: rgba(10, 12, 18, 0.35);
+}
+#touch-steer { position: absolute; left: var(--l); bottom: var(--b); width: 216px; height: 96px; display: flex; overflow: hidden; }
+#touch-steer span { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 28px; }
+#touch-steer span:first-child { border-right: 2px solid rgba(255, 255, 255, 0.2); }
+#touch-steer span.active, #touch button.active { background: rgba(255, 255, 255, 0.3); }
+.touch-pedals { position: absolute; right: var(--r); bottom: var(--b); display: flex; align-items: flex-end; gap: 12px; }
+#touch .touch-pedals button { width: 92px; height: 96px; font-size: 13px; letter-spacing: 0.08em; }
+#touch .touch-pedals .gas { height: 124px; border-color: rgba(34, 197, 94, 0.8); }
+#touch .touch-pedals .brake { border-color: rgba(239, 68, 68, 0.8); }
+.touch-tools { position: absolute; top: max(8px, env(safe-area-inset-top)); right: calc(var(--r) + 48px); display: flex; gap: 6px; }
+#touch .touch-tools button { width: 56px; height: 44px; padding: 0; font-size: 10px; letter-spacing: 0.06em; background: rgba(10, 12, 18, 0.62); border-width: 0; border-radius: 10px; }
+
+@media (pointer: coarse) {
+  html, body { overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+  #touch { display: block; }
+  #menu .hint, .settings h3, .settings .help, .compound-pick, .tyres, .timing .row.track, .timing .row.team { display: none; }
+  .timing, .dash, .damage-map { right: auto; bottom: auto; transform-origin: top left; }
+  .timing { top: 8px; left: max(8px, env(safe-area-inset-left)); transform: scale(0.6); }
+  .dash { top: 8px; left: calc(max(8px, env(safe-area-inset-left)) + 134px); transform: scale(0.6); }
+  .damage-map { top: 84px; left: max(8px, env(safe-area-inset-left)); transform: scale(0.45); }
+  .map { top: 60px; right: max(8px, env(safe-area-inset-right)); transform: scale(0.45); transform-origin: top right; }
+  .settings-btn { top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right)); width: 44px; height: 44px; }
+  .settings { top: 60px; right: max(8px, env(safe-area-inset-right)); max-height: calc(100dvh - 68px); overflow-y: auto; }
+}
+
+/* a phone on its side: the menu has to fit a short screen */
+@media (pointer: coarse) and (max-height: 500px) {
+  #menu { gap: 2px; padding: 8px max(12px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+  #menu h1 { align-self: flex-start; font-size: 24px; }
+  .menu-step { gap: 4px; }
+  .menu-step .step-label { display: none; }
+  #menu .sub { margin: 0; font-size: 11px; }
+  #menu-teams { flex-wrap: nowrap; justify-content: flex-start; width: 100%; max-width: none; overflow-x: auto; padding: 4px; }
+  .team-card { flex: none; width: 124px; padding: 6px 8px; }
+  .team-card canvas { max-height: 34px; }
+  .team-card .track-meta, .team-swatches { display: none; }
+  #menu-tracks .track-card { width: 150px; }
+  #menu-tracks .track-card svg { height: 60px; }
+  .menu-actions { position: sticky; bottom: 0; margin-top: 4px; }
+  .menu-btn { padding: 8px 22px; }
+}
+
+/* a phone held upright: the game waits (src/main.js) */
+@media (pointer: coarse) and (orientation: portrait) and (max-width: 600px) {
+  #rotate {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: #080a10;
+    text-align: center;
+  }
+  #rotate b { font-size: 20px; }
+  .rotate-icon { width: 44px; height: 76px; margin-bottom: 20px; border: 4px solid #fff; border-radius: 9px; animation: rotate-hint 2.4s ease-in-out infinite; }
+}
+@keyframes rotate-hint { 0%, 25% { transform: rotate(0); } 60%, 100% { transform: rotate(90deg); } }
 
 /* ---- loading screen (src/loading.js), shared by every track load ---- */
 #loading {

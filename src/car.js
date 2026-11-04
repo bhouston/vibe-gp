@@ -116,6 +116,9 @@ export const DEFAULT_SHAPE = {
   rearWing: { mainY: 0.9, flapY: 1.02, mainChord: 0.32, flapChord: 0.2 },
 };
 
+/** Car.update state for a car standing still at the origin, with no physics behind it. */
+export const PARKED = { position: { x: 0, z: 0 }, height: 0, yaw: 0, steerAngle: 0, speed: 0, pitch: 0, roll: 0, heave: 0 };
+
 export class Car {
   /** @param team an entry from TEAMS (src/teams.js) */
   constructor(team) {

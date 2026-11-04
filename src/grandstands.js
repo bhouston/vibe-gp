@@ -1,6 +1,7 @@
 // Spectator grandstands: placed opposite the pits on the start straight and on the
 // outside of the biggest corners wherever there's room, each a stepped concrete stand
 // with coloured seats, a cantilevered roof, sponsor fascias and an instanced crowd.
+import { MOBILE } from './quality.js';
 import * as THREE from 'three/webgpu';
 import {
   color, float, vec3, uv, mix, step, fract, abs, sin, time, attribute, positionLocal, max,
@@ -396,6 +397,8 @@ export function buildGrandstands(P, group, land = null) {
       }
     }
   });
+
+  if (MOBILE) return footprints; // no crowd: over half of a circuit's triangles
 
   const geo = personGeometry();
   const count = people.length;
