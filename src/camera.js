@@ -51,8 +51,8 @@ export class CameraRig {
         // heights follow the road: never below the road behind the car (cresting a hill
         // downwards), and the look point rides the slope ahead
         const T = this.track;
-        const hBack = T ? T.heightAt(car.trackS - back) : y;
-        const hAhead = T ? T.heightAt(car.trackS + 4) : y;
+        const hBack = T ? T.heightAt(car.trackS - back, car.lateral) : y;
+        const hAhead = T ? T.heightAt(car.trackS + 4, car.lateral) : y;
         targetPos = new THREE.Vector3(x - dx * back, Math.max(y, hBack) + up, z - dz * back);
         targetLook = new THREE.Vector3(x + fx * 4, hAhead + 0.9, z + fz * 4);
         stiffness = 1000; // already smoothed via camYaw

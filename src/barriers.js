@@ -223,9 +223,11 @@ export function buildBarriers(P, group, kerbColors = [0xc81414, 0xf5f5f5]) {
     const wall = s > 0 ? P.wallL : P.wallR;
     const idx = line.idx;
     const n = idx.length;
+    // (the foot of this side's barrier: on a banked corner, level with the kerb's outer edge)
+    const foot = (i) => P.roadY(i, s * (wall[i] + tyre[i]));
     // concrete, pushed back behind any tyres
     const at = (i, lat) => [P.px[i] + P.leftX(i) * s * lat, P.pz[i] + P.leftZ(i) * s * lat];
-    const pts = idx.map((i) => [...at(i, wall[i] + tyre[i]), P.py[i]]);
+    const pts = idx.map((i) => [...at(i, wall[i] + tyre[i]), foot(i)]);
     add(polyWallGeometry(pts, line.closed), wallMat);
 
     // tyre stacks: belt face on the collision line's front, tops back to the concrete
@@ -241,16 +243,16 @@ export function buildBarriers(P, group, kerbColors = [0xc81414, 0xf5f5f5]) {
       const nTrack = (i) => [-P.leftX(i) * s, 0, -P.leftZ(i) * s];
       add(ribbonGeometry(count, (k) => {
         const i = I(k), [ax, az] = at(i, front(i) - 0.02);
-        return { a: [ax, P.py[i] - WALL_FOOT, az], b: [ax, P.py[i] + BELT_TOP, az], na: nTrack(i), uva: [sAlong(k), 0], uvb: [sAlong(k), 1] };
+        return { a: [ax, foot(i) - WALL_FOOT, az], b: [ax, foot(i) + BELT_TOP, az], na: nTrack(i), uva: [sAlong(k), 0], uvb: [sAlong(k), 1] };
       }), belt);
       add(ribbonGeometry(count, (k) => {
         const i = I(k), [ax, az] = at(i, front(i) - 0.02), [bx, bz] = at(i, front(i) + 0.14);
-        return { a: [ax, P.py[i] + BELT_TOP, az], b: [bx, P.py[i] + BELT_TOP, bz], na: [0, 1, 0], uva: [sAlong(k), 1], uvb: [sAlong(k), 1] };
+        return { a: [ax, foot(i) + BELT_TOP, az], b: [bx, foot(i) + BELT_TOP, bz], na: [0, 1, 0], uva: [sAlong(k), 1], uvb: [sAlong(k), 1] };
       }), belt);
       add(ribbonGeometry(count, (k) => {
         const i = I(k), [ax, az] = at(i, front(i)), [bx, bz] = at(i, front(i) + tyre[i] + 0.05);
         return {
-          a: [ax, P.py[i] + TYRE_TOP, az], b: [bx, P.py[i] + TYRE_TOP, bz],
+          a: [ax, foot(i) + TYRE_TOP, az], b: [bx, foot(i) + TYRE_TOP, bz],
           na: slopeNormal(P.grade[i], P.tx[i], P.tz[i]), uva: [sAlong(k), 0], uvb: [sAlong(k), tyre[i] + 0.05],
         };
       }), tyreTop);
@@ -268,13 +270,13 @@ export function buildBarriers(P, group, kerbColors = [0xc81414, 0xf5f5f5]) {
     const nT = (k) => [-P.leftX(I(k)) * s, 0, -P.leftZ(I(k)) * s];
     const vertical = ribbonGeometry(count, (k) => {
       const i = I(k), [x, z] = base(k);
-      return { a: [x, P.py[i] + FENCE_BASE, z], b: [x, P.py[i] + FENCE_KNEE, z], na: nT(k), uva: [dist[k], 0], uvb: [dist[k], FENCE_KNEE - FENCE_BASE] };
+      return { a: [x, foot(i) + FENCE_BASE, z], b: [x, foot(i) + FENCE_KNEE, z], na: nT(k), uva: [dist[k], 0], uvb: [dist[k], FENCE_KNEE - FENCE_BASE] };
     });
     const leanLen = Math.hypot(FENCE_TOP - FENCE_KNEE, FENCE_LEAN);
     const lean = ribbonGeometry(count, (k) => {
       const i = I(k), [x, z] = base(k), [x2, z2] = at(i, wall[i] + tyre[i] - FENCE_LEAN);
       const up = FENCE_KNEE - FENCE_BASE;
-      return { a: [x, P.py[i] + FENCE_KNEE, z], b: [x2, P.py[i] + FENCE_TOP, z2], na: nT(k), uva: [dist[k], up], uvb: [dist[k], up + leanLen] };
+      return { a: [x, foot(i) + FENCE_KNEE, z], b: [x2, foot(i) + FENCE_TOP, z2], na: nT(k), uva: [dist[k], up], uvb: [dist[k], up + leanLen] };
     });
     const f = new THREE.Mesh(mergeGeometries([vertical, lean]), fence);
     f.renderOrder = 1;
@@ -285,7 +287,7 @@ export function buildBarriers(P, group, kerbColors = [0xc81414, 0xf5f5f5]) {
       if (dist[k] < next) continue;
       next = dist[k] + POST_PITCH;
       const i = I(k), [x, z] = base(k);
-      posts.push([x, P.py[i], z, P.tx[i], P.tz[i], P.leftX(i) * s, P.leftZ(i) * s]);
+      posts.push([x, foot(i), z, P.tx[i], P.tz[i], P.leftX(i) * s, P.leftZ(i) * s]);
     }
   }
 

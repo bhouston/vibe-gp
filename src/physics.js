@@ -146,6 +146,9 @@ export class CarPhysics {
     this.gear = 1;
     this.rpm = 0;
     this.wallHit = 0;
+    this.impact = 0; // hardest hit since the sound last read it (m/s into the wall)
+    this.impactSide = 0; // where that hit landed: + = the car's left
+    this.scrape = 0; // fastest slide along a wall since the sound last read it (m/s)
     this.throttle = 0; // pedal positions after rate limiting
     this.brake = 0;
     this.downforce = 0;
@@ -492,18 +495,22 @@ export class CarPhysics {
     this.lateral = q.lateral;
   }
 
-  /** Road height and slope under the car (the road is level across its width). */
+  /** Road height and slope under the car, along the track and across any banking. */
   sampleSlope() {
     const T = this.track;
     const s = this.trackS;
-    this.height = T.heightAt(s);
-    const grade = T.gradeAt(s);
+    this.height = T.heightAt(s, this.lateral);
+    const grade = T.gradeAt(s), bank = T.bankAt(s, this.lateral);
     const i = this.trackIndex;
     const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
-    // the slope points along the track tangent; project it onto the car's axes
-    this.gradeF = grade * (sin * T.tx[i] + cos * T.tz[i]);
-    this.gradeL = grade * (cos * T.tx[i] - sin * T.tz[i]);
-    this.vcurv = T.vcurvAt(s);
+    // the slope: along the track tangent, plus the banking across it; onto the car's axes
+    const gx = grade * T.tx[i] + bank * T.leftX(i), gz = grade * T.tz[i] + bank * T.leftZ(i);
+    this.gradeF = sin * gx + cos * gz;
+    this.gradeL = cos * gx - sin * gz;
+    // a banked turn presses the car into the road: v² k sin(bank) of extra load, like a dip
+    // (the down-slope pull of gradeL supplies the rest of what makes banking fast)
+    const k = T.curvature[i];
+    this.vcurv = T.vcurvAt(s) + (-Math.sign(bank * k) * Math.abs(bank * k)) / Math.hypot(1, bank);
   }
 
   /** Which surface each tyre's contact patch is on. */
@@ -574,7 +581,12 @@ export class CarPhysics {
     p.x -= nx * pen;
     p.z -= nz * pen;
     const vr = this.vel.x * nx + this.vel.z * nz;
+    this.scrape = Math.max(this.scrape, Math.abs(this.vel.z * nx - this.vel.x * nz));
     if (vr > 0) {
+      if (vr > this.impact) {
+        this.impact = vr;
+        this.impactSide = nx * Math.cos(this.yaw) - nz * Math.sin(this.yaw);
+      }
       // bounce off the wall-normal part
       this.vel.x -= nx * vr * 1.3;
       this.vel.z -= nz * vr * 1.3;

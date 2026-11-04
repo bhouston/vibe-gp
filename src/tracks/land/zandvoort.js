@@ -3,6 +3,12 @@
 // (near-white from above) gravel traps at the slow/medium corners, a few plain asphalt
 // run-offs, and open dunes (marram grass, scrub, sand blowouts, small ponds) all around.
 export default {
+  // Turn 3 Hugenholtz 19 degrees, Turn 14 Arie Luyendyk 18 degrees (published figures);
+  // the Slotemakerbocht isn't banked
+  banking: [
+    [745, 0, 190, 19, 35],
+    [3620, 0, 300, 18, 70],
+  ],
   surfaces: {
     gravel: 0xd8cfba, // light beige-grey dune gravel (reads almost white on the imagery)
     widen: 0,

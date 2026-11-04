@@ -1,14 +1,16 @@
 // Settings panel: a gear button in the top-right corner opens a panel with the driver
-// aids / damage toggles, the controls list and the renderer in use. The toggles are
+// aids / damage / sound toggles, the controls list and the renderer in use. The toggles are
 // saved to localStorage so they survive reloads and track changes.
 
 const KEY = 'vibegp.settings';
-const DEFAULTS = { tc: true, abs: true, damage: true };
+const DEFAULTS = { tc: true, abs: true, damage: true, music: true, sound: true };
 
 const TOGGLES = [
   { id: 'tc', name: 'Traction control', desc: 'Traction, stability and steering assists' },
   { id: 'abs', name: 'ABS', desc: 'Anti-lock brakes' },
   { id: 'damage', name: 'Damage', desc: 'Collision damage (off also repairs the car)' },
+  { id: 'music', name: 'Music', desc: 'Background music' },
+  { id: 'sound', name: 'Sound effects', desc: 'Engine, wind, tyres and crashes' },
 ];
 
 function load() {

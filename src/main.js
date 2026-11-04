@@ -19,6 +19,7 @@ import { PitStop } from './pitStop.js';
 import { PitCrews } from './pitCrew.js';
 import { COMPOUND_LIST } from './tyres.js';
 import { DAMAGE } from './damage.js';
+import { Sound } from './sound.js';
 
 const SUN_DIR = [0.45, 0.8, 0.35];
 // Night races: the key light is the floodlights, nearly overhead (short shadows under the
@@ -177,16 +178,21 @@ async function start() {
     pitStop.nextWing = !pitStop.nextWing;
   };
   hud.onWing = toggleWing;
-  // driver aids and collision damage: toggled in the settings panel (gear, top right)
+  // driver aids, collision damage and sound: toggled in the settings panel (gear, top right)
   const settings = new Settings();
+  const sound = new Sound();
+  sound.setMusic(settings.get('music'));
+  sound.setSfx(settings.get('sound'));
   /** Push the saved settings onto the car physics (a new track makes a new CarPhysics). */
   const applySettings = () => {
     physics.tc = settings.get('tc');
     physics.abs = settings.get('abs');
     physics.damageOn = settings.get('damage');
   };
-  const SETTING_NAMES = { tc: 'TRACTION CONTROL', abs: 'ABS', damage: 'DAMAGE' };
+  const SETTING_NAMES = { tc: 'TRACTION CONTROL', abs: 'ABS', damage: 'DAMAGE', music: 'MUSIC', sound: 'SOUND EFFECTS' };
   settings.onChange = (id, on) => {
+    if (id === 'music') sound.setMusic(on);
+    if (id === 'sound') sound.setSfx(on);
     if (!physics) return;
     applySettings();
     // switching damage off also repairs the car, and clears the bits it left on the track
@@ -268,8 +274,10 @@ async function start() {
   // one still in progress. While a load runs, `track` is null and the loop idles.
   const loading = new LoadingBar();
   let loadToken = 0;
+  let compiling = false; // a load is compiling shaders: the render loop waits for it
   async function loadTrack(def) {
     const token = ++loadToken;
+    compiling = true;
     loading.show(def.name);
     await nextFrame();
     if (track) {
@@ -292,6 +300,7 @@ async function start() {
     floods.setHeads(track.floodHeads);
     physics = new CarPhysics(track.path, track.path.gridPose(0));
     applySettings();
+    sound.setTrack(def);
     car.clearDebris();
     rig.tvCams = track.tvCams;
     rig.track = track.path;
@@ -301,34 +310,24 @@ async function start() {
     hud.setTrack(track.path, def);
     syncBox();
     // compile the new materials' shaders now, behind the loading screen, rather than in a
-    // stutter on the first frames
-    // (object by object, handing a frame back to the browser every ~40 ms, since building
-    // the shaders of many new materials at once would block the page for seconds)
+    // stutter on the first frames. The render loop stays paused (`compiling`) until this is
+    // done: a frame drawn meanwhile would create every pipeline synchronously, one at a
+    // time, ahead of these asynchronous ones, which the GPU process can build in parallel.
     loading.progress(0.86, 'Compiling shaders');
     await nextFrame();
     try {
-      const parts = [...track.group.children, crews.group];
-      if (globalThis.__reverseCompile) parts.reverse(); // TEMP-DEBUG
-      window.__slow = []; // TEMP-DEBUG
-      let t0 = performance.now();
-      for (let k = 0; k < parts.length; k++) {
-        const tc = performance.now(); // TEMP-DEBUG
-        await renderer.compileAsync(parts[k], camera, scene);
-        if (performance.now() - tc > 150) { const n = []; parts[k].traverse((o) => o.isMesh && n.push((o.material?.type ?? '') + ':' + (o.geometry?.attributes?.position?.count ?? 0))); window.__slow.push([k, Math.round(performance.now() - tc), n.slice(0, 3).join(' ')]); } // TEMP-DEBUG
-        if (performance.now() - t0 > 40) {
-          if (token !== loadToken) return;
-          loading.progress(0.86 + 0.12 * (k / parts.length));
-          await nextFrame();
-          t0 = performance.now();
-        }
-      }
-      await renderer.compileAsync(scene, camera); // the rest: the car, sky, anything shared
+      await renderer.compileAsync(scene, camera);
     } catch (e) {
       console.warn('shader precompile failed', e);
     }
     if (token !== loadToken) return;
-    loading.progress(1, 'Ready');
-    await nextFrame();
+    // the first frames still build what the precompile can't reach (shadow and mirror
+    // passes): let them run behind the loading screen, not as a hitch on the grid
+    compiling = false;
+    loading.progress(0.97, 'Ready');
+    for (let k = 0; k < 3; k++) await nextFrame();
+    if (token !== loadToken) return;
+    loading.progress(1);
     loading.hide();
   }
 
@@ -359,12 +358,13 @@ async function start() {
   };
   // ?track=<id> skips the menu and starts that race directly (team comes from ?team=)
   const urlTrack = TRACKS.find((t) => t.id === new URLSearchParams(location.search).get('track'));
+  // (the track cards' outlines are worked out after the first load, only once the menu shows)
   if (urlTrack) {
     loadTrack(urlTrack);
     menu.hide();
   } else {
     showMenu();
-    loadTrack(TRACKS[0]); // something to look at behind the menu
+    loadTrack(TRACKS[0]).then(() => menu.fillTrackCards()); // something to look at behind the menu
   }
 
   addEventListener('resize', () => {
@@ -383,7 +383,7 @@ async function start() {
     const now = performance.now();
     const dt = Math.min((now - last) / 1000, 0.1);
     last = now;
-    if (!track) return; // a track is loading behind the loading screen
+    if (!track || compiling) return; // a track is loading behind the loading screen
 
     if (menu.visible) {
       menu.handleKeys(input);
@@ -433,8 +433,9 @@ async function start() {
 
     boxMarker.update(dt, pitStop, !menu.visible);
     hud.update(physics, timer, rig.mode, pitStop);
+    sound.update(physics, { camera, mode: rig.mode, racing: !menu.visible });
     if (import.meta.env.DEV) {
-      window.__game = { physics, timer, track, pitStop, crews, loadTrack, TRACKS, menu, car, setTeam, TEAMS, scene, sun, floods, renderer };
+      window.__game = { physics, timer, track, pitStop, crews, loadTrack, TRACKS, menu, car, setTeam, TEAMS, scene, sun, floods, renderer, sound };
       // automated screenshots can pin the camera: window.__fixedCam = { x, y, z, tx, ty, tz }
       const fc = window.__fixedCam;
       if (fc) {
@@ -486,22 +487,14 @@ class Menu {
       return card;
     });
 
+    // the outline and lap length need each circuit's full path: fillTrackCards, later
     this.trackCards = tracks.map((def, i) => {
-      const path = new TrackPath(def);
-      const b = path.bounds();
-      const pad = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) * 0.08;
-      const vb = `${b.minX - pad} ${b.minZ - pad} ${b.maxX - b.minX + pad * 2} ${b.maxZ - b.minZ + pad * 2}`;
-      const sw = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) / 45;
-      const start = path.poseAt(0);
       const card = document.createElement('button');
       card.className = 'track-card';
       card.innerHTML = `
-        <svg viewBox="${vb}" preserveAspectRatio="xMidYMid meet">
-          <path d="${path.svgPath(3)}" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linejoin="round"/>
-          <circle cx="${start.x}" cy="${start.z}" r="${sw * 1.1}" fill="#e10600"/>
-        </svg>
+        <svg preserveAspectRatio="xMidYMid meet"></svg>
         <div class="track-name">${def.name}${def.night ? ' <span class="night-tag">Night</span>' : ''}</div>
-        <div class="track-meta">${def.country} · ${(path.length / 1000).toFixed(3)} km${path.elevationRange >= 1 ? ` · ${path.elevationRange.toFixed(0)} m elevation change` : ''}</div>
+        <div class="track-meta">${def.country}</div>
         <div class="track-best">Best <span>${formatTime(loadBest(def.id))}</span></div>`;
       card.addEventListener('click', () => this.focus('track', i));
       card.addEventListener('dblclick', () => this.go());
@@ -522,6 +515,26 @@ class Menu {
     this.focus('team', this.selectedTeam);
     this.markTeam();
     this.setStep('team');
+  }
+
+  /** Draw each circuit's outline and lap length on its card, one card per frame. */
+  async fillTrackCards() {
+    if (this.filled) return;
+    this.filled = true;
+    for (const [i, def] of this.tracks.entries()) {
+      await nextFrame();
+      const path = new TrackPath(def);
+      const b = path.bounds();
+      const pad = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) * 0.08;
+      const sw = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) / 45;
+      const start = path.poseAt(0);
+      const card = this.trackCards[i], svg = card.querySelector('svg');
+      svg.setAttribute('viewBox', `${b.minX - pad} ${b.minZ - pad} ${b.maxX - b.minX + pad * 2} ${b.maxZ - b.minZ + pad * 2}`);
+      svg.innerHTML = `
+        <path d="${path.svgPath(3)}" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linejoin="round"/>
+        <circle cx="${start.x}" cy="${start.z}" r="${sw * 1.1}" fill="#e10600"/>`;
+      card.querySelector('.track-meta').textContent = `${def.country} · ${(path.length / 1000).toFixed(3)} km${path.elevationRange >= 1 ? ` · ${path.elevationRange.toFixed(0)} m elevation change` : ''}`;
+    }
   }
 
   /** Show one step of the menu: 'team' (pick a car) or 'track' (pick a circuit, then GO). */
@@ -547,6 +560,7 @@ class Menu {
   show(currentId) {
     const i = this.tracks.findIndex((t) => t.id === currentId);
     if (i >= 0) this.focus('track', i);
+    if (currentId) this.fillTrackCards(); // (at startup: after the first load instead)
     this.setStep('team');
     this.el.hidden = false;
     document.getElementById('hud').classList.add('menu-open');

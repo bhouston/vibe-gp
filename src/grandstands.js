@@ -73,7 +73,7 @@ function chooseSites(P) {
     const half = Math.round(L / 2 / ds);
     let lo = Infinity, hi = -Infinity;
     for (let k = -half; k <= half; k++) {
-      const h = P.py[P.wrap(i + k)];
+      const h = P.roadY(P.wrap(i + k), side * 1000); // (behind a banked corner: its raised edge)
       lo = Math.min(lo, h);
       hi = Math.max(hi, h);
     }

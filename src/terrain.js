@@ -77,7 +77,23 @@ export class TerrainField {
     // reference points { x, z, h, r }: r = corridor half-width that stays under the verges
     const refs = [];
     for (let i = 0; i < P.N; i += 2) {
-      refs.push({ x: P.px[i], z: P.pz[i], h: P.py[i], r: Math.max(P.wallL[i] + P.tyreL[i], P.wallR[i] + P.tyreR[i]) + VERGE + SKIRT });
+      const r = Math.max(P.wallL[i] + P.tyreL[i], P.wallR[i] + P.tyreR[i]) + VERGE + SKIRT;
+      const rise = Math.abs(P.bank[i]) * P.bankEdge;
+      if (rise < 0.02) {
+        refs.push({ x: P.px[i], z: P.pz[i], h: P.py[i], r });
+        continue;
+      }
+      // a banked corner: the ground stays under the road and its low side, and comes up
+      // behind the raised outer edge like the embankment it is
+      const up = Math.sign(P.bank[i]); // +1: the left side is the high one
+      const lx = P.leftX(i), lz = P.leftZ(i), E = P.bankEdge;
+      const low = up > 0 ? P.wallR[i] + P.tyreR[i] : P.wallL[i] + P.tyreL[i];
+      const high = up > 0 ? P.wallL[i] + P.tyreL[i] : P.wallR[i] + P.tyreR[i];
+      const rl = low + VERGE + SKIRT, rh = high + VERGE + SKIRT;
+      refs.push({ x: P.px[i], z: P.pz[i], h: P.py[i] - rise, r: E + 1 });
+      refs.push({ x: P.px[i] - lx * up * rl / 2, z: P.pz[i] - lz * up * rl / 2, h: P.py[i] - rise, r: rl / 2 + 1 });
+      const c = (E + 1 + rh) / 2;
+      refs.push({ x: P.px[i] + lx * up * c, z: P.pz[i] + lz * up * c, h: P.py[i] + rise, r: (rh - E - 1) / 2 + 2 });
     }
     if (pit) {
       for (let j = 0; j < pit.N; j += 4) {

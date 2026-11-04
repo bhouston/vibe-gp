@@ -26,18 +26,6 @@ import interlagosLand from './land/interlagos.js';
 import lasvegasLand from './land/lasvegas.js';
 import yasmarinaLand from './land/yasmarina.js';
 import imolaLand from './land/imola.js';
-import suzukaOsm from './land/osm/suzuka.js';
-import jeddahOsm from './land/osm/jeddah.js';
-import montrealOsm from './land/osm/montreal.js';
-import monacoOsm from './land/osm/monaco.js';
-import barcelonaOsm from './land/osm/barcelona.js';
-import spaOsm from './land/osm/spa.js';
-import hungaroringOsm from './land/osm/hungaroring.js';
-import zandvoortOsm from './land/osm/zandvoort.js';
-import interlagosOsm from './land/osm/interlagos.js';
-import lasvegasOsm from './land/osm/lasvegas.js';
-import yasmarinaOsm from './land/osm/yasmarina.js';
-import imolaOsm from './land/osm/imola.js';
 
 // land.ground -> the scenery flags that pick the ground material (track.js)
 function groundFlags(ground) {
@@ -49,10 +37,11 @@ function groundFlags(ground) {
  * Merge a circuit's hand-matched run-off and surroundings (src/tracks/land/<id>.js) into its
  * generated definition: `surfaces` replaces its src/tracks/runoff.js entry, `scenery` and
  * `kerb` override the generated ones, and the whole file is kept as def.land. The
- * OpenStreetMap land around it (src/tracks/land/osm/<id>.js) becomes def.landOsm.
+ * OpenStreetMap land around it (src/tracks/land/osm/<id>.js, megabytes on a big city
+ * circuit) is only loaded when the circuit is: def.loadLandOsm(), see Track.create.
  */
-function withLand(def, land, osm) {
-  if (osm && Object.keys(osm).length) def = { ...def, landOsm: osm };
+function withLand(def, land, loadLandOsm) {
+  def = { ...def, loadLandOsm };
   if (!land || !Object.keys(land).length) return def;
   return {
     ...def,
@@ -65,8 +54,8 @@ function withLand(def, land, osm) {
 
 export const TRACKS = [
   oval, ...[
-    [suzuka, suzukaLand, suzukaOsm], [jeddah, jeddahLand, jeddahOsm], [montreal, montrealLand, montrealOsm], [monaco, monacoLand, monacoOsm],
-    [barcelona, barcelonaLand, barcelonaOsm], [spa, spaLand, spaOsm], [hungaroring, hungaroringLand, hungaroringOsm], [zandvoort, zandvoortLand, zandvoortOsm],
-    [interlagos, interlagosLand, interlagosOsm], [lasvegas, lasvegasLand, lasvegasOsm], [yasmarina, yasmarinaLand, yasmarinaOsm], [imola, imolaLand, imolaOsm],
-  ].map(([def, land, osm]) => withLand(def, land, osm)),
+    [suzuka, suzukaLand, () => import('./land/osm/suzuka.js')], [jeddah, jeddahLand, () => import('./land/osm/jeddah.js')], [montreal, montrealLand, () => import('./land/osm/montreal.js')], [monaco, monacoLand, () => import('./land/osm/monaco.js')],
+    [barcelona, barcelonaLand, () => import('./land/osm/barcelona.js')], [spa, spaLand, () => import('./land/osm/spa.js')], [hungaroring, hungaroringLand, () => import('./land/osm/hungaroring.js')], [zandvoort, zandvoortLand, () => import('./land/osm/zandvoort.js')],
+    [interlagos, interlagosLand, () => import('./land/osm/interlagos.js')], [lasvegas, lasvegasLand, () => import('./land/osm/lasvegas.js')], [yasmarina, yasmarinaLand, () => import('./land/osm/yasmarina.js')], [imola, imolaLand, () => import('./land/osm/imola.js')],
+  ].map(([def, land, loadOsm]) => withLand(def, land, loadOsm)),
 ];

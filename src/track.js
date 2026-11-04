@@ -67,6 +67,8 @@ export class Track {
    * paint, and reports onProgress(fraction 0..1, what it is doing).
    */
   static async create(def, onProgress = () => {}) {
+    onProgress(0, 'Loading map data');
+    if (def.loadLandOsm) def = { ...def, landOsm: (await def.loadLandOsm()).default };
     const t = new Track(def, { deferred: true });
     t.timings = []; // ms spent in each step (handy when a circuit loads slowly)
     let prev = null, t0 = performance.now();
@@ -321,11 +323,11 @@ export class Track {
       const i = P.wrap(i0 + k);
       const s = (i0 + k) * P.ds;
       const latA = typeof latA0 === 'function' ? latA0(i) : latA0, latB = typeof latB0 === 'function' ? latB0(i) : latB0;
-      const lx = P.leftX(i), lz = P.leftZ(i), h = P.py[i] + y;
+      const lx = P.leftX(i), lz = P.leftZ(i);
       return {
-        a: [P.px[i] + lx * latA, h, P.pz[i] + lz * latA],
-        b: [P.px[i] + lx * latB, h, P.pz[i] + lz * latB],
-        na: slopeNormal(P.grade[i], P.tx[i], P.tz[i]),
+        a: [P.px[i] + lx * latA, P.roadY(i, latA) + y, P.pz[i] + lz * latA],
+        b: [P.px[i] + lx * latB, P.roadY(i, latB) + y, P.pz[i] + lz * latB],
+        na: P.roadNormal(i),
         uva: [s, uvY(latA)],
         uvb: [s, uvY(latB)],
       };
@@ -362,19 +364,25 @@ export class Track {
         for (const [i0, count] of this.runs(Array.from(kinds, (_, i) => has(i)))) {
           const n = count - 1;
           if (n < 2) continue;
-          const geo = ribbonGeometry(n, (k) => {
-            const i = P.wrap(i0 + k), lx = P.leftX(i), lz = P.leftZ(i), h = P.py[i] + 0.008;
-            const [la, lb] = lats[kind - 1](i);
-            const a = side * la, b = side * lb;
-            return {
-              a: [P.px[i] + lx * a, h, P.pz[i] + lz * a],
-              b: [P.px[i] + lx * b, h, P.pz[i] + lz * b],
-              na: slopeNormal(P.grade[i], P.tx[i], P.tz[i]),
-              uva: [(i0 + k) * P.ds, a],
-              uvb: [(i0 + k) * P.ds, b],
-            };
-          });
-          g.add(this.mesh(geo, mat));
+          // over a banked stretch, one ribbon on the tilted part and one on the level beyond
+          let banked = false;
+          for (let k = 0; k < n; k++) banked ||= P.bank[P.wrap(i0 + k)] !== 0;
+          const clips = banked ? [[0, P.bankEdge], [P.bankEdge, Infinity]] : [[0, Infinity]];
+          for (const [c0, c1] of clips) {
+            const geo = ribbonGeometry(n, (k) => {
+              const i = P.wrap(i0 + k), lx = P.leftX(i), lz = P.leftZ(i);
+              const [la, lb] = lats[kind - 1](i);
+              const a = side * Math.min(c1, Math.max(c0, la)), b = side * Math.min(c1, Math.max(c0, lb));
+              return {
+                a: [P.px[i] + lx * a, P.roadY(i, a) + 0.008, P.pz[i] + lz * a],
+                b: [P.px[i] + lx * b, P.roadY(i, b) + 0.008, P.pz[i] + lz * b],
+                na: c1 === Infinity ? slopeNormal(P.grade[i], P.tx[i], P.tz[i]) : P.roadNormal(i),
+                uva: [(i0 + k) * P.ds, a],
+                uvb: [(i0 + k) * P.ds, b],
+              };
+            });
+            g.add(this.mesh(geo, mat));
+          }
         }
       }
     }
@@ -386,11 +394,11 @@ export class Track {
         const n = count - 1; // the run's last flag is the first sample past it
         if (n < 2) continue;
         const geo = ribbonGeometry(n, (k) => {
-          const i = P.wrap(i0 + k), lx = P.leftX(i), lz = P.leftZ(i), h = P.py[i] + 0.012;
+          const i = P.wrap(i0 + k), lx = P.leftX(i), lz = P.leftZ(i);
           const a = side * inA[i], b = side * outA[i];
           return {
-            a: [P.px[i] + lx * a, h, P.pz[i] + lz * a],
-            b: [P.px[i] + lx * b, h, P.pz[i] + lz * b],
+            a: [P.px[i] + lx * a, P.roadY(i, a) + 0.012, P.pz[i] + lz * a],
+            b: [P.px[i] + lx * b, P.roadY(i, b) + 0.012, P.pz[i] + lz * b],
             na: slopeNormal(P.grade[i], P.tx[i], P.tz[i]),
             uva: [(i0 + k) * P.ds, a],
             uvb: [(i0 + k) * P.ds, b],
@@ -414,7 +422,7 @@ export class Track {
           const ramp = Math.min(1, k / 1.5, (n - 1 - k) / 1.5); // ends slope down to the ground
           for (const [f, hf] of prof) {
             const lat = side * (P.sausageLat + f * SAUSAGE.width);
-            pos.push(P.px[i] + lx * lat, P.py[i] + 0.02 + hf * SAUSAGE.height * Math.max(0, ramp), P.pz[i] + lz * lat);
+            pos.push(P.px[i] + lx * lat, P.roadY(i, lat) + 0.02 + hf * SAUSAGE.height * Math.max(0, ramp), P.pz[i] + lz * lat);
             uvs.push((i0 + k) * P.ds, f);
           }
         }
@@ -455,11 +463,15 @@ export class Track {
     const geos = [];
     // one side of a path: flat from the centre to edge(k), then down to outer(k).
     // uv = (metres along, lateral offset); attribute grass = (mowing direction, stripes, mown)
-    const side = (count, at, edge, outer, runoff = 1) => {
-      for (const [from, to, drop] of [[() => 0, edge, 0], [edge, outer, -TERRAIN_DROP - 0.4]]) {
+    // (kink, on the main track: where a banked road's tilt ends, so the verge follows it there
+    // and stays level beyond instead of cutting a straight line through the road)
+    const side = (count, at, edge, outer, runoff = 1, kink = null) => {
+      const stages = [[() => 0, edge, 0], [edge, outer, -TERRAIN_DROP - 0.4]];
+      if (kink) stages.splice(0, 1, [() => 0, kink, 0], [kink, edge, 0]);
+      for (const [from, to, drop] of stages) {
         const geo = ribbonGeometry(count, (k) => {
           const c = at(k), a = from(k), b = to(k);
-          return { a: c.p(a, 0), b: c.p(b, drop), na: c.n, uva: [c.s, a], uvb: [c.s, b] };
+          return { a: c.p(a, 0), b: c.p(b, drop), na: to === kink ? c.nb : c.n, uva: [c.s, a], uvb: [c.s, b] };
         });
         const grass = new Float32Array(count * 8);
         for (let k = 0; k < count; k++) {
@@ -474,8 +486,8 @@ export class Track {
 
     const mainAt = (k) => {
       const i = P.wrap(k);
-      const lx = P.leftX(i), lz = P.leftZ(i), h = P.py[i];
-      return { n: slopeNormal(P.grade[i], P.tx[i], P.tz[i]), t: [P.tx[i], P.tz[i]], s: k * P.ds, p: (lat, dy) => [P.px[i] + lx * lat, h + dy, P.pz[i] + lz * lat] };
+      const lx = P.leftX(i), lz = P.leftZ(i);
+      return { n: slopeNormal(P.grade[i], P.tx[i], P.tz[i]), nb: P.roadNormal(i), t: [P.tx[i], P.tz[i]], s: k * P.ds, p: (lat, dy) => [P.px[i] + lx * lat, P.roadY(i, lat) + dy, P.pz[i] + lz * lat] };
     };
     for (const sgn of [1, -1]) {
       const w0 = sgn > 0 ? P.wallL : P.wallR, ty = sgn > 0 ? P.tyreL : P.tyreR;
@@ -484,7 +496,7 @@ export class Track {
       const cap = (k) => insideCap(P.curvature[P.wrap(k)], sgn);
       const edge = (k) => sgn * Math.max(minEdge, Math.min(wall[P.wrap(k)] + VERGE, cap(k)));
       const outer = (k) => sgn * Math.max(Math.abs(edge(k)) + 0.5, Math.min(wall[P.wrap(k)] + VERGE + SKIRT, cap(k)));
-      side(P.N + 1, mainAt, edge, outer);
+      side(P.N + 1, mainAt, edge, outer, 1, () => sgn * P.bankEdge);
     }
 
     if (pit) {

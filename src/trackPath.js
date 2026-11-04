@@ -10,6 +10,9 @@
 //           the lap from the start line. The road is level across its width; world
 //           heights are relative to the start line (py = 0 there).
 //   kerb (optional): { colors: [a, b] } the two kerb stripe colours (default red/white)
+//   land.banking (optional, src/tracks/land/<id>.js): banked corners. The road tilts about
+//           its centreline, out to the kerb's outer edge; the run-off beyond is level with
+//           that edge (roadY). Everything else in this file is the centreline height.
 //   pitlane (optional): { points: [[x, y], ...] } open polyline of the pit lane's
 //           centreline in the same map coordinates, in the driving direction, from
 //           the point where it leaves the track to the point where it rejoins.
@@ -62,6 +65,7 @@ export class TrackPath {
     this.sample();
     this.sampleElevation();
     this.computeKerbs();
+    this.computeBanking();
     this.pit = def.pitlane ? new PitPath(this, def.pitlane) : null;
     this.computeWalls();
     this.applyPitWalls();
@@ -152,8 +156,25 @@ export class TrackPath {
     return arr[i] + (arr[this.wrap(i + 1)] - arr[i]) * t;
   }
 
-  heightAt(s) {
-    return this.lerpAt(this.py, s);
+  /** Road height `lat` metres left of the centreline (the centreline itself by default). */
+  heightAt(s, lat = 0) {
+    const h = this.lerpAt(this.py, s);
+    return lat === 0 ? h : h + this.lerpAt(this.bank, s) * Math.min(this.bankEdge, Math.max(-this.bankEdge, lat));
+  }
+  /** Rise of the road per metre to the left at s, at lateral offset lat (0 on the level run-off). */
+  bankAt(s, lat = 0) {
+    return Math.abs(lat) < this.bankEdge ? this.lerpAt(this.bank, s) : 0;
+  }
+  /** Ground height at sample i, `lat` metres left of the centreline. */
+  roadY(i, lat) {
+    return this.py[i] + this.bank[i] * Math.min(this.bankEdge, Math.max(-this.bankEdge, lat));
+  }
+  /** Unit normal of the road surface at sample i, along and across (the tilted part). */
+  roadNormal(i) {
+    const b = this.bank[i], g = this.grade[i];
+    const x = -g * this.tx[i] - b * this.leftX(i), z = -g * this.tz[i] - b * this.leftZ(i);
+    const l = Math.hypot(x, 1, z);
+    return [x / l, 1 / l, z / l];
   }
   gradeAt(s) {
     return this.lerpAt(this.grade, s);
@@ -471,6 +492,29 @@ export class TrackPath {
     }
   }
 
+  /**
+   * Banked corners from def.land.banking: [at, from, to, degrees, ramp]. The road leans into
+   * the turn across the stretch `from`..`to` metres from `at`, reaching `degrees` after
+   * `ramp` metres (default 40) from each end. this.bank[i] = rise per metre to the left.
+   */
+  computeBanking() {
+    const N = this.N, ds = this.ds;
+    this.bank = new Float64Array(N);
+    this.bankEdge = this.hw + KERB_WIDTH;
+    for (const [at, from, to, degrees, ramp = 40] of this.def.land?.banking ?? []) {
+      const i0 = this.anchorIndex(at);
+      if (i0 < 0) continue;
+      const a = Math.round(from / ds), b = Math.round(to / ds), r = Math.max(1, Math.round(ramp / ds));
+      let k = 0;
+      for (let d = a; d <= b; d++) k += this.curvature[this.wrap(i0 + d)];
+      const slope = -Math.sign(k) * Math.tan((degrees * Math.PI) / 180); // a left turn: left side low
+      for (let d = a; d <= b; d++) {
+        const t = Math.min(1, (d - a) / r, (b - d) / r);
+        this.bank[this.wrap(i0 + d)] = slope * t * t * (3 - 2 * t);
+      }
+    }
+  }
+
   /** Run-off spec: def.surfaces (src/tracks/land/<id>.js), else src/tracks/runoff.js. */
   surfaceSpec() {
     return this.def.surfaces ?? RUNOFF[this.def.id] ?? {};
@@ -682,7 +726,7 @@ export class TrackPath {
     for (const side of [1, -1]) {
       const open = side > 0 ? this.openL : this.openR;
       const wall = side > 0 ? this.wallL : this.wallR;
-      const pt = (i) => [this.px[i] + this.leftX(i) * side * wall[i], this.pz[i] + this.leftZ(i) * side * wall[i], this.py[i]];
+      const pt = (i) => [this.px[i] + this.leftX(i) * side * wall[i], this.pz[i] + this.leftZ(i) * side * wall[i], this.roadY(i, side * wall[i])];
       const keep = Array.from(open, (o) => !o);
       if (keep.every(Boolean)) {
         lines.push({ pts: Array.from({ length: N }, (_, i) => pt(i)), idx: Array.from({ length: N }, (_, i) => i), closed: true, render: true, kind: 'main', side });
@@ -861,10 +905,15 @@ export class TrackPath {
     if (hint < 0) for (let i = 0; i < this.N; i++) scan(i);
     else for (let k = -40; k <= 40; k++) scan(this.wrap(hint + k));
     const i = best;
-    const dx = x - this.px[i], dz = z - this.pz[i];
-    const along = dx * this.tx[i] + dz * this.tz[i];
-    const lateral = dx * this.leftX(i) + dz * this.leftZ(i);
-    let s = i * this.ds + along;
+    const along = (k) => (x - this.px[k]) * this.tx[k] + (z - this.pz[k]) * this.tz[k];
+    const left = (k) => (x - this.px[k]) * this.leftX(k) + (z - this.pz[k]) * this.leftZ(k);
+    // between the two samples either side of the point, blending their projections: one
+    // sample's tangent alone jumps when the nearest sample changes on the outside of a bend
+    const a = along(i) >= 0 ? i : this.wrap(i - 1), b = this.wrap(a + 1);
+    const ua = along(a), ub = along(b);
+    const t = ua > 0 && ub < 0 ? ua / (ua - ub) : ua <= 0 ? 0 : 1;
+    const lateral = left(a) * (1 - t) + left(b) * t;
+    let s = (a + t) * this.ds;
     s = ((s % this.length) + this.length) % this.length;
     return { i, s, lateral };
   }

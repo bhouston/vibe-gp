@@ -70,6 +70,13 @@ is grass, or asphalt where a `paved` entry covers it) out to the barrier. Ends t
 
 Yellow sausage kerbs just behind the painted kerb.
 
+## `banking`: banked corners
+
+`banking: [[at, from, to, degrees, ramp], ...]`: the road leans into the turn over the
+stretch `from`..`to` metres from `at`, reaching `degrees` after `ramp` metres (default 40)
+from each end. It tilts about the centreline out to the kerbs; the run-off and barriers
+beyond are level with the kerb's edge, and the car feels it (grip, load and down-slope pull).
+
 ## `bridges`: structures over the track
 
 `bridges: [[at, kind], ...]` with `at` as above (usually lap metres) and `kind` one of
