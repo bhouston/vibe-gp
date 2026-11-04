@@ -10,6 +10,7 @@ import { LapTimer, formatTime } from './race.js';
 import { Hud } from './hud.js';
 import { skyNode } from './materials.js';
 import { TEAMS, teamById, teamCarSvg, teamGarage } from './teams.js';
+import { BoxMarker } from './boxMarker.js';
 import { PitStop } from './pitStop.js';
 import { PitCrews } from './pitCrew.js';
 import { COMPOUND_LIST } from './tyres.js';
@@ -112,6 +113,8 @@ async function start() {
   const timer = new LapTimer();
   const hud = new Hud();
   const pitStop = new PitStop();
+  const boxMarker = new BoxMarker(); // big green arrow in the pit lane beside the player's box
+  scene.add(boxMarker.group);
 
   let track = null;
   let physics = null;
@@ -137,6 +140,7 @@ async function start() {
     if (!track || !car) return;
     pitStop.setBox(track.path.pit, teamGarage(car.team));
     hud.setBox(pitStop.box);
+    boxMarker.setBox(pitStop.box, track.path.pit);
   }
 
   function setTeam(team) {
@@ -267,6 +271,7 @@ async function start() {
     sun.position.set(p.x + SUN_DIR[0] * 100, py + SUN_DIR[1] * 100, p.z + SUN_DIR[2] * 100);
     sun.target.position.set(p.x, py, p.z);
 
+    boxMarker.update(dt, pitStop, !menu.visible);
     hud.update(physics, timer, rig.mode, pitStop);
     if (import.meta.env.DEV) {
       window.__game = { physics, timer, track, pitStop, crews, loadTrack, TRACKS, menu, car, setTeam, TEAMS, scene, sun };
@@ -376,6 +381,7 @@ class Menu {
     const cards = this.cardsOf(row);
     this.index[row] = (i + cards.length) % cards.length;
     cards.forEach((c, k) => c.classList.toggle('focused', k === this.index[row]));
+    cards[this.index[row]].scrollIntoView?.({ block: 'nearest' }); // the circuit list can be longer than the screen
     for (const [name, el] of Object.entries(this.rows)) el.classList.toggle('active', name === row);
   }
 
