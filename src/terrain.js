@@ -7,6 +7,7 @@
 //  - over the next BLEND metres it eases into a smooth inverse-distance interpolation
 //    of the whole lap's heights, plus fractal undulation that grows with distance
 //    (bigger on circuits with more relief), so far ground has believable hills.
+import { MOBILE } from './quality.js';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { color, float, vec3, mix, step, fract, floor, abs, smoothstep as sstep, positionLocal, positionWorld, normalWorld, mx_noise_float, bumpMap } from 'three/tsl';
@@ -393,7 +394,7 @@ export function buildTrees(P, field, stands, group, trackId, scenery, occupied =
   const TILE = 300;
   for (const [name, geo, palette, tipLight, clumpScale] of kinds) {
     const tiles = new Map();
-    for (const t of items[name]) {
+    for (const t of MOBILE ? items[name].filter((_, i) => i % 2 === 0) : items[name]) {
       const k = `${Math.floor(t.x / TILE)},${Math.floor(t.z / TILE)}`;
       if (!tiles.has(k)) tiles.set(k, []);
       tiles.get(k).push(t);

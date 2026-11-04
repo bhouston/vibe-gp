@@ -6,6 +6,7 @@ import { Car, MIRROR_LAYER, PARKED } from './car.js';
 import { CarPhysics } from './physics.js';
 import { Input } from './input.js';
 import { bindTouch } from './touch.js';
+import { MOBILE } from './quality.js';
 import { CameraRig } from './camera.js';
 import { LapTimer, StartLights, formatTime } from './race.js';
 import { Hud } from './hud.js';
@@ -481,7 +482,7 @@ async function start() {
     renderer.render(scene, camera);
     // mirrors show up next frame; skip them when the view is too far away to see them.
     // The shadow map was just drawn for this frame, so reuse it instead of redrawing per mirror.
-    if (camera.position.distanceTo(car.group.position) < 40) {
+    if (!MOBILE && camera.position.distanceTo(car.group.position) < 40) {
       sun.shadow.autoUpdate = false;
       car.renderMirrors(renderer, scene);
       sun.shadow.autoUpdate = true;
