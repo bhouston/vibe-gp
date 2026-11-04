@@ -12,6 +12,8 @@
 
     <div id="hud">
       <div class="panel timing">
+        <div class="row track"><span id="track-name"></span></div>
+        <div class="row team"><span id="team-name"></span></div>
         <div class="row"><span class="label">LAP</span><span id="lap">OUT</span></div>
         <div class="row big"><span class="label">TIME</span><span id="current">--:--.---</span></div>
         <div class="row"><span class="label">LAST</span><span id="last">--:--.---</span></div>
@@ -19,23 +21,82 @@
       </div>
 
       <div class="panel dash">
+        <div class="compound-pick">
+          <div class="compound-head"><span class="label">NEXT PIT STOP</span><span id="tyre-fitted"></span></div>
+          <div id="compounds" class="compounds"></div>
+          <button id="wing-change" class="wing-change" title="Change the front wing at the next pit stop (F)">
+            <svg viewBox="0 0 44 16" aria-hidden="true"><path d="M2 12 L42 12 L42 9 L26 7 L22 3 L18 7 L2 9 Z" /></svg>
+            <span>NEW FRONT WING</span><b id="wing-choice">NO</b><kbd>F</kbd>
+          </button>
+        </div>
         <div class="rpm"><div id="rpm-fill"></div></div>
         <div class="dash-row">
           <div class="gear-box"><span id="gear">1</span><small>GEAR</small></div>
           <div class="speed-box"><span id="speed">0</span><small>KM/H</small></div>
         </div>
+        <div class="tyres">
+          <div class="tyre-grid">
+            <div class="wing-ind" title="Front wing condition"><i id="wing-0"></i><i id="wing-1"></i></div>
+            <div class="tyre" id="tyre-0"></div><div class="tyre" id="tyre-1"></div>
+            <div class="tyre" id="tyre-2"></div><div class="tyre" id="tyre-3"></div>
+          </div>
+          <div class="aids"><span id="aid-tc">TC</span><span id="aid-abs">ABS</span><small>TYRES °C</small></div>
+        </div>
       </div>
+
+      <div class="panel damage-map" title="Car damage (turn damage on / off in Settings)">
+        <svg id="damage-car" viewBox="0 0 60 124" aria-hidden="true"></svg>
+        <small id="damage-state">DAMAGE</small>
+      </div>
+
+      <div class="panel map"><svg id="minimap"></svg></div>
 
       <div id="flash"></div>
       <div id="surface"></div>
 
-      <div class="panel help">
-        <div><b>W / ↑</b> throttle &nbsp; <b>S / ↓</b> brake / reverse</div>
-        <div><b>A D / ← →</b> steer &nbsp; <b>Space</b> handbrake</div>
-        <div><b>C</b> camera (<span id="cam">CHASE</span>) &nbsp; <b>R</b> reset</div>
-        <div class="dim">Renderer: <span id="backend">…</span></div>
+      <button id="settings-btn" class="settings-btn" type="button" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M19.14 12.94a7.5 7.5 0 0 0 .06-.94 7.5 7.5 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7 7 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.84a.5.5 0 0 0 .12.64l2.03 1.58a7.5 7.5 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.38 1.04.7 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.84a.5.5 0 0 0 .5-.42l.36-2.54a7 7 0 0 0 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" />
+        </svg>
+      </button>
+
+      <div id="settings" class="panel settings" hidden>
+        <h2>Settings</h2>
+        <div id="settings-toggles" class="settings-toggles"></div>
+        <h3>Controls</h3>
+        <div class="help">
+          <div><b>W / ↑</b> throttle &nbsp; <b>S / ↓</b> brake / reverse</div>
+          <div><b>A D / ← →</b> steer</div>
+          <div><b>1 2 3</b> tyres for the next pit stop: soft / medium / hard</div>
+          <div><b>F</b> change the front wing at the next pit stop</div>
+          <div><b>C</b> camera (<span id="cam">CHASE</span>) &nbsp; <b>R</b> reset &nbsp; <b>Esc</b> tracks</div>
+          <div class="dim">Renderer: <span id="backend">…</span></div>
+        </div>
       </div>
       <div id="error"></div>
+    </div>
+
+    <div id="menu" hidden>
+      <h1>VIBE <span>GP</span></h1>
+      <section id="step-team" class="menu-step">
+        <p class="step-label">Step 1 of 2</p>
+        <p class="sub">Choose your car</p>
+        <div id="menu-teams" class="menu-row"></div>
+        <div class="menu-actions">
+          <button id="btn-next" class="menu-btn primary">Next →</button>
+        </div>
+        <p class="hint">← → to choose · Enter for next</p>
+      </section>
+      <section id="step-track" class="menu-step" hidden>
+        <p class="step-label">Step 2 of 2</p>
+        <p class="sub">Choose a circuit</p>
+        <div id="menu-tracks" class="menu-row"></div>
+        <div class="menu-actions">
+          <button id="btn-back" class="menu-btn">← Back</button>
+          <button id="btn-go" class="menu-btn primary go">GO</button>
+        </div>
+        <p class="hint">Arrow keys to choose · Enter to race · Backspace to go back · Esc in-game to come back here</p>
+      </section>
     </div>
 
     <script type="module" src="/src/main.js"></script>

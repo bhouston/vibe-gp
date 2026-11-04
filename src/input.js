@@ -4,7 +4,6 @@ const KEYS = {
   brake: ['KeyS', 'ArrowDown'],
   left: ['KeyA', 'ArrowLeft'],
   right: ['KeyD', 'ArrowRight'],
-  handbrake: ['Space'],
 };
 
 export class Input {
@@ -38,7 +37,6 @@ export class Input {
       throttle: this.is('throttle') ? 1 : 0,
       brake: this.is('brake') ? 1 : 0,
       steer: (this.is('left') ? 1 : 0) - (this.is('right') ? 1 : 0),
-      handbrake: this.is('handbrake'),
     };
   }
 }
