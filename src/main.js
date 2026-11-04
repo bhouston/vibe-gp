@@ -11,7 +11,9 @@ import { Hud } from './hud.js';
 import { Settings } from './settings.js';
 import { skyNode, nightSkyNode } from './materials.js';
 import { setFloodMask, nightU, FloodlightPool } from './night.js';
-import { TEAMS, teamById, teamCarSvg, teamGarage } from './teams.js';
+import { setLandMaps } from './land.js';
+import { LoadingBar, nextFrame } from './loading.js';
+import { TEAMS, teamById, teamLogoCanvas, teamGarage } from './teams.js';
 import { BoxMarker } from './boxMarker.js';
 import { PitStop } from './pitStop.js';
 import { PitCrews } from './pitCrew.js';
@@ -262,17 +264,31 @@ async function start() {
   }
   setTeam(loadTeam());
 
-  function loadTrack(def) {
+  // Track loads build in steps behind the shared loading screen; a newer load supersedes
+  // one still in progress. While a load runs, `track` is null and the loop idles.
+  const loading = new LoadingBar();
+  let loadToken = 0;
+  async function loadTrack(def) {
+    const token = ++loadToken;
+    loading.show(def.name);
+    await nextFrame();
     if (track) {
       scene.remove(track.group, crews.group);
       track.dispose();
       crews.dispose();
+      track = null;
     }
-    track = new Track(def);
+    const built = await Track.create(def, (f, label) => loading.progress(f * 0.85, label));
+    if (token !== loadToken) {
+      built.dispose(); // another track was picked meanwhile
+      return;
+    }
+    track = built;
     crews = new PitCrews(track.path.pit);
     scene.add(track.group, crews.group);
     setAtmosphere(!!def.night);
     setFloodMask(track.floodMask ?? null);
+    setLandMaps(track.land ?? null);
     floods.setHeads(track.floodHeads);
     physics = new CarPhysics(track.path, track.path.gridPose(0));
     applySettings();
@@ -284,6 +300,32 @@ async function start() {
     timer.best = loadBest(def.id);
     hud.setTrack(track.path, def);
     syncBox();
+    // compile the new materials' shaders now, behind the loading screen, rather than in a
+    // stutter on the first frames
+    // (object by object, handing a frame back to the browser every ~40 ms, since building
+    // the shaders of many new materials at once would block the page for seconds)
+    loading.progress(0.86, 'Compiling shaders');
+    await nextFrame();
+    try {
+      const parts = [...track.group.children, crews.group];
+      let t0 = performance.now();
+      for (let k = 0; k < parts.length; k++) {
+        await renderer.compileAsync(parts[k], camera, scene);
+        if (performance.now() - t0 > 40) {
+          if (token !== loadToken) return;
+          loading.progress(0.86 + 0.12 * (k / parts.length));
+          await nextFrame();
+          t0 = performance.now();
+        }
+      }
+      await renderer.compileAsync(scene, camera); // the rest: the car, sky, anything shared
+    } catch (e) {
+      console.warn('shader precompile failed', e);
+    }
+    if (token !== loadToken) return;
+    loading.progress(1, 'Ready');
+    await nextFrame();
+    loading.hide();
   }
 
   function resetCar() {
@@ -337,6 +379,7 @@ async function start() {
     const now = performance.now();
     const dt = Math.min((now - last) / 1000, 0.1);
     last = now;
+    if (!track) return; // a track is loading behind the loading screen
 
     if (menu.visible) {
       menu.handleKeys(input);
@@ -428,11 +471,11 @@ class Menu {
       card.style.setProperty('--c1', t.id === 'redbull' ? t.ui.secondary : t.ui.primary);
       card.style.setProperty('--c3', t.ui.accent);
       card.innerHTML = `
-        ${teamCarSvg(t)}
         <div class="team-name track-name">${t.name}</div>
         <div class="track-meta">${t.car} · #${t.number}</div>
         <div class="team-swatches">${[t.ui.primary, t.ui.secondary, t.ui.accent]
           .map((c) => `<i style="background:${c}"></i>`).join('')}</div>`;
+      card.prepend(teamLogoCanvas(t));
       card.addEventListener('click', () => this.pickTeam(i));
       card.addEventListener('mouseenter', () => this.focus('team', i));
       this.rows.team.appendChild(card);

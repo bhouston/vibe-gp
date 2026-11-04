@@ -108,6 +108,23 @@ function chooseSites(P) {
     return false;
   };
 
+  // where the real circuit has its stands (src/tracks/land/<id>.js `stands`), only there:
+  // each entry [at, side, from, to, rows] split into stands of up to 150 m along the lap
+  const real = P.def.land?.stands;
+  if (real?.length) {
+    P.resolveEntries(real, (i0, sgn, a, b, e) => {
+      if (!sgn) return;
+      const rows = e[4] ?? 12, total = (b - a) * ds, n = Math.max(1, Math.ceil(total / 150));
+      const each = total / n;
+      for (let k = 0; k < n; k++) {
+        const mid = P.wrap(i0 + a + Math.round(((k + 0.5) * each) / ds));
+        const L = Math.max(30, each - 6);
+        tryAdd(mid, sgn, [L, L * 0.8, L * 0.6, L * 0.4], rows, k === 0 && rows >= 14);
+      }
+    });
+    return sites;
+  }
+
   // main grandstand facing the grid, across from the pits
   let mainSide = P.pit ? -P.pit.side : null;
   if (mainSide === null) {
@@ -296,7 +313,7 @@ function ribbonBoxAt(w, hgt, d, x, y, z) {
  * [{ ox, oz, ax, az, dx, dz, L, depth }] (origin at front centre, a = along, d = away
  * from the track) so cameras can keep out of them.
  */
-export function buildGrandstands(P, group) {
+export function buildGrandstands(P, group, land = null) {
   const sites = chooseSites(P);
   if (!sites.length) return [];
   const rand = rng(Math.round(P.length * 10));
@@ -309,6 +326,19 @@ export function buildGrandstands(P, group) {
   sites.forEach((site, n) => {
     const { f, L, rows } = site;
     const geo = standGeometry(L, rows);
+    // not out over water (a harbour, a lake, the river: src/land.js); the back of a stand on
+    // a narrow quay may reach the water's edge, so only stands mostly over water are left out
+    if (land) {
+      let wet = 0, all = 0;
+      for (let a = -L / 2; a <= L / 2; a += 6) {
+        for (let d = 0; d <= geo.depth; d += 3) {
+          const w = land.waterAt(f.ox + f.ax * a + f.dx * d, f.oz + f.az * a + f.dz * d);
+          all++;
+          if (w && w.w > 0.5) wet++;
+        }
+      }
+      if (wet > all * 0.25) return;
+    }
     // local +Z = away from the track, +Y up, X picked so the basis is right-handed
     const X = new THREE.Vector3(f.ax, 0, f.az), Y = new THREE.Vector3(0, 1, 0), Z = new THREE.Vector3(f.dx, 0, f.dz);
     if (new THREE.Vector3().crossVectors(X, Y).dot(Z) < 0) X.negate();

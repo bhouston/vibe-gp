@@ -47,10 +47,80 @@ const REAR_WING_PIVOT = [0, 0.95, -2.45]; // where the rear wing sits on its swa
 const FLOOR_EDGE_OFF = 0.6; // floor damage at which the floor-edge wing tears off
 const SMOKE = { count: 36, life: 1.6, at: [0, 0.5, -2.35] }; // engine smoke puffs (car frame emitter)
 
+/**
+ * The car's sculpted bodywork. A team overrides any top-level key with `shape` in its
+ * team file (src/teams/<id>.js) to follow its real car's silhouette; the rest (floor,
+ * wing elements, suspension, halo, wheels, mirrors) is common to every car.
+ * All in the car body frame (+Z forward, +Y up, +X left), metres. Keep the cockpit
+ * opening (y 0.70, x +-0.2, z -0.32..0.52) inside the chassis top, and the chassis
+ * reaching the mirror stalks (x 0.3, y 0.64, z ~0.69).
+ */
+export const DEFAULT_SHAPE = {
+  // nose + survival cell + gearbox cover: [z, width, height, centre y], front to back
+  monocoque: [
+    [2.92, 0.08, 0.05, 0.16],
+    [2.8, 0.16, 0.08, 0.17],
+    [2.55, 0.22, 0.12, 0.2],
+    [2.2, 0.27, 0.17, 0.25],
+    [1.8, 0.31, 0.24, 0.31],
+    [1.4, 0.37, 0.33, 0.36],
+    [1.0, 0.47, 0.44, 0.39],
+    [0.6, 0.6, 0.52, 0.41],
+    [0.2, 0.7, 0.58, 0.4],
+    [-0.4, 0.72, 0.58, 0.4],
+    [-0.9, 0.6, 0.52, 0.39],
+    [-1.4, 0.44, 0.42, 0.36],
+    [-1.9, 0.3, 0.3, 0.33],
+    [-2.3, 0.2, 0.2, 0.31],
+    [-2.5, 0.14, 0.13, 0.31],
+  ],
+  monocoquePower: 3.2, // superellipse exponent of the sections: 2 round .. 6 boxy
+  monocoqueFlat: 0.1, // how flat the underside is (0..1)
+  // left sidepod (mirrored for the right): [z, width, height, centre y, centre x, undercut]
+  // undercut 0..1 pulls the lower half in towards the chassis
+  sidepod: [
+    [0.66, 0.2, 0.3, 0.5, 0.45, 0.0],
+    [0.58, 0.34, 0.34, 0.5, 0.5, 0.3],
+    [0.35, 0.38, 0.36, 0.48, 0.53, 0.5],
+    [0.0, 0.38, 0.34, 0.45, 0.53, 0.55],
+    [-0.4, 0.34, 0.28, 0.4, 0.5, 0.5],
+    [-0.8, 0.26, 0.22, 0.33, 0.45, 0.4],
+    [-1.15, 0.18, 0.16, 0.26, 0.4, 0.3],
+    [-1.4, 0.1, 0.1, 0.21, 0.36, 0.2],
+  ],
+  sidepodPower: 3.4,
+  // dark inlet mouth at the front of each sidepod: centre (x, y), size, z of its face
+  sidepodInlet: { x: 0.45, y: 0.5, w: 0.16, h: 0.26, z: 0.672, power: 3.4 },
+  // airbox + engine cover spine: [z, width, height, centre y]
+  engineCover: [
+    [-0.16, 0.2, 0.18, 0.95],
+    [-0.28, 0.27, 0.3, 0.9],
+    [-0.6, 0.3, 0.42, 0.82],
+    [-1.0, 0.26, 0.44, 0.72],
+    [-1.4, 0.2, 0.38, 0.62],
+    [-1.8, 0.14, 0.3, 0.52],
+    [-2.2, 0.1, 0.22, 0.44],
+    [-2.45, 0.08, 0.14, 0.38],
+  ],
+  engineCoverPower: 2.6,
+  // airbox mouth above the driver's head: centre y, size, z of its face
+  airbox: { y: 0.965, w: 0.16, h: 0.14, z: -0.152, power: 2.2 },
+  // shark fin plate outline in (z, y); null for no fin
+  fin: [[-0.85, 0.93], [-1.6, 0.96], [-2.25, 0.93], [-2.33, 0.85], [-2.2, 0.5], [-1.8, 0.62], [-1.4, 0.76], [-1.0, 0.88]],
+  // wing endplate outlines in (z, y)
+  frontEndplate: [[2.98, 0.04], [2.3, 0.04], [2.28, 0.26], [2.34, 0.36], [2.5, 0.35], [2.74, 0.2], [2.98, 0.12]],
+  rearEndplate: [[-2.2, 0.86], [-2.22, 1.07], [-2.45, 1.12], [-2.72, 1.08], [-2.74, 0.8], [-2.6, 0.6], [-2.4, 0.64]],
+  // front wing: how much the outboard flaps rise towards the endplates (1 = default)
+  frontWingSweep: 1,
+  // rear wing element heights and chords
+  rearWing: { mainY: 0.9, flapY: 1.02, mainChord: 0.32, flapChord: 0.2 },
+};
+
 export class Car {
   /** @param team an entry from TEAMS (src/teams.js) */
   constructor(team) {
     this.team = team;
+    this.shape = { ...DEFAULT_SHAPE, ...(team.shape ?? {}) };
     this.group = new THREE.Group(); // world transform (position + yaw)
     this.body = new THREE.Group(); // sprung mass (pitch/roll)
     this.group.add(this.body);
@@ -87,7 +157,8 @@ export class Car {
     // index 0 = left (+x), 1 = right, like the damage model; each crumples on its own
     this.sidepods = [1, -1].map((side) => [this.add(this.body, this.sidepod(side), sidepodMat)]);
     this.add(this.body, this.engineCover(), livery('engine'));
-    this.add(this.body, this.sharkFin(), livery('fin'));
+    const fin = this.sharkFin();
+    if (fin) this.add(this.body, fin, livery('fin'));
     this.intakes(black);
     this.floor(carbon);
     this.frontWing(carbon, wings);
@@ -124,75 +195,42 @@ export class Car {
 
   monocoque() {
     // long, low nose that meets the front wing mainplane, rising to the survival cell
-    // and tapering into the gearbox / rear crash structure. [z, width, height, centre y]
-    const s = [
-      [2.92, 0.08, 0.05, 0.16],
-      [2.8, 0.16, 0.08, 0.17],
-      [2.55, 0.22, 0.12, 0.2],
-      [2.2, 0.27, 0.17, 0.25],
-      [1.8, 0.31, 0.24, 0.31],
-      [1.4, 0.37, 0.33, 0.36],
-      [1.0, 0.47, 0.44, 0.39],
-      [0.6, 0.6, 0.52, 0.41],
-      [0.2, 0.7, 0.58, 0.4],
-      [-0.4, 0.72, 0.58, 0.4],
-      [-0.9, 0.6, 0.52, 0.39],
-      [-1.4, 0.44, 0.42, 0.36],
-      [-1.9, 0.3, 0.3, 0.33],
-      [-2.3, 0.2, 0.2, 0.31],
-      [-2.5, 0.14, 0.13, 0.31],
-    ];
-    return ringLoft(sectionsToRings(s.map(([z, w, h, y]) => ({ z, pts: roundedSection(w, h, 32, 3.2, y, 0.1) }))));
+    // and tapering into the gearbox / rear crash structure
+    const S = this.shape;
+    return ringLoft(sectionsToRings(S.monocoque.map(([z, w, h, y]) => (
+      { z, pts: roundedSection(w, h, 32, S.monocoquePower, y, S.monocoqueFlat) }
+    ))));
   }
 
   sidepod(side) {
-    // downwash sidepod: high letterbox inlet, deep undercut beneath, top surface
-    // ramping down to the floor at the rear. [z, width, height, centre y, centre x, undercut]
-    const s = [
-      [0.66, 0.2, 0.3, 0.5, 0.45, 0.0],
-      [0.58, 0.34, 0.34, 0.5, 0.5, 0.3],
-      [0.35, 0.38, 0.36, 0.48, 0.53, 0.5],
-      [0.0, 0.38, 0.34, 0.45, 0.53, 0.55],
-      [-0.4, 0.34, 0.28, 0.4, 0.5, 0.5],
-      [-0.8, 0.26, 0.22, 0.33, 0.45, 0.4],
-      [-1.15, 0.18, 0.16, 0.26, 0.4, 0.3],
-      [-1.4, 0.1, 0.1, 0.21, 0.36, 0.2],
-    ];
+    // inlet, undercut beneath, top surface falling to the floor at the rear
+    const S = this.shape;
     return ringLoft(sectionsToRings(
-      s.map(([z, w, h, y, x, u]) => ({ z, pts: podSection(w, h, 28, 3.4, x * side, y, side, u) })),
+      S.sidepod.map(([z, w, h, y, x, u]) => ({ z, pts: podSection(w, h, 28, S.sidepodPower, x * side, y, side, u) })),
     ));
   }
 
   engineCover() {
     // roll-hoop airbox above/behind the driver, flowing into the engine cover spine
-    const s = [
-      [-0.16, 0.2, 0.18, 0.95],
-      [-0.28, 0.27, 0.3, 0.9],
-      [-0.6, 0.3, 0.42, 0.82],
-      [-1.0, 0.26, 0.44, 0.72],
-      [-1.4, 0.2, 0.38, 0.62],
-      [-1.8, 0.14, 0.3, 0.52],
-      [-2.2, 0.1, 0.22, 0.44],
-      [-2.45, 0.08, 0.14, 0.38],
-    ];
-    return ringLoft(sectionsToRings(s.map(([z, w, h, y]) => ({ z, pts: roundedSection(w, h, 24, 2.6, y) }))));
+    const S = this.shape;
+    return ringLoft(sectionsToRings(S.engineCover.map(([z, w, h, y]) => (
+      { z, pts: roundedSection(w, h, 24, S.engineCoverPower, y) }
+    ))));
   }
 
   sharkFin() {
-    const outline = [
-      [-0.85, 0.93], [-1.6, 0.96], [-2.25, 0.93], [-2.33, 0.85], [-2.2, 0.5], [-1.8, 0.62], [-1.4, 0.76], [-1.0, 0.88],
-    ];
-    return plateGeometry(outline, 0.012, 'x');
+    return this.shape.fin ? plateGeometry(this.shape.fin, 0.012, 'x') : null;
   }
 
   /** Dark openings: sidepod letterbox inlets and the airbox mouth. */
   intakes(black) {
+    const { sidepodInlet: I, airbox: A } = this.shape;
     for (const side of [-1, 1]) {
-      const ring = (z, k) => podSection(0.16 * k, 0.26 * k, 20, 3.4, 0.45 * side, 0.5, side, 0).map(([x, y]) => [x, y, z]);
-      this.sidepods[side > 0 ? 0 : 1].push(this.add(this.body, ringLoft([ring(0.672, 1), ring(0.64, 0.9)]), black));
+      const ring = (z, k) => podSection(I.w * k, I.h * k, 20, I.power, I.x * side, I.y, side, 0).map(([x, y]) => [x, y, z]);
+      this.sidepods[side > 0 ? 0 : 1].push(this.add(this.body, ringLoft([ring(I.z, 1), ring(I.z - 0.032, 0.9)]), black));
     }
-    const mouth = (z, k) => roundedSection(0.16 * k, 0.14 * k, 16, 2.2, 0.965).map(([x, y]) => [x, y, z]);
-    this.add(this.body, ringLoft([mouth(-0.152, 1), mouth(-0.2, 0.85)]), black);
+    const mouth = (z, k) => roundedSection(A.w * k, A.h * k, 16, A.power, A.y).map(([x, y]) => [x, y, z]);
+    this.add(this.body, ringLoft([mouth(A.z, 1), mouth(A.z - 0.048, 0.85)]), black);
   }
 
   floor(carbon) {
@@ -260,7 +298,7 @@ export class Car {
     // 0 inboard (neutral section under the nose) -> 1 at the endplate
     const t = (x) => {
       const k = Math.min(Math.max((Math.abs(x) - 0.22) / 0.7, 0), 1);
-      return k * k * (3 - 2 * k);
+      return k * k * (3 - 2 * k) * this.shape.frontWingSweep;
     };
     const els = [
       [wings.frontMain, (x) => ({ z: 2.78, y: 0.08 + t(x) * 0.015, chord: 0.32, thick: 0.028, angle: 0.05 + t(x) * 0.05 })],
@@ -269,7 +307,7 @@ export class Car {
       [wings.frontTop, (x) => ({ z: 2.37 - t(x) * 0.02, y: 0.195 + t(x) * 0.1, chord: 0.11, thick: 0.016, angle: 0.42 + t(x) * 0.25 })],
     ];
     for (const [parent, xs] of parts) for (const [mat, fn] of els) this.add(parent, this.wingElement(xs, fn), mat);
-    const endplate = [[2.98, 0.04], [2.3, 0.04], [2.28, 0.26], [2.34, 0.36], [2.5, 0.35], [2.74, 0.2], [2.98, 0.12]];
+    const endplate = this.shape.frontEndplate;
     for (const side of this.wingSides) {
       side.endplate = this.add(side.inner, plateGeometry(endplate, 0.014, 'x', side.sx * (span + 0.008)), wings.frontEndplate);
     }
@@ -510,9 +548,10 @@ export class Car {
     const xs = Array.from({ length: 17 }, (_, i) => -span + (2 * span * i) / 16);
     // rounded tips: the elements droop into the endplates
     const droop = (x) => Math.max(0, (Math.abs(x) - 0.36) / 0.14) ** 2 * 0.07;
-    this.add(rw, this.wingElement(xs, (x) => ({ z: -2.4, y: 0.9 - droop(x), chord: 0.32, thick: 0.035, angle: 0.15 })), wings.rearMain);
-    this.add(rw, this.wingElement(xs, (x) => ({ z: -2.6, y: 1.02 - droop(x) * 0.6, chord: 0.2, thick: 0.022, angle: 0.6 })), wings.rearFlap);
-    const endplate = [[-2.2, 0.86], [-2.22, 1.07], [-2.45, 1.12], [-2.72, 1.08], [-2.74, 0.8], [-2.6, 0.6], [-2.4, 0.64]];
+    const R = this.shape.rearWing;
+    this.add(rw, this.wingElement(xs, (x) => ({ z: -2.4, y: R.mainY - droop(x), chord: R.mainChord, thick: 0.035, angle: 0.15 })), wings.rearMain);
+    this.add(rw, this.wingElement(xs, (x) => ({ z: -2.6, y: R.flapY - droop(x) * 0.6, chord: R.flapChord, thick: 0.022, angle: 0.6 })), wings.rearFlap);
+    const endplate = this.shape.rearEndplate;
     for (const s of [-1, 1]) this.add(rw, plateGeometry(endplate, 0.015, 'x', s * (span + 0.008)), wings.rearEndplate);
     // swan-neck pylons hooking over the mainplane from the crash structure
     const neck = [[-2.32, 0.34], [-2.44, 0.34], [-2.52, 0.62], [-2.5, 0.99], [-2.36, 0.99], [-2.4, 0.95], [-2.44, 0.62]];

@@ -12,6 +12,7 @@ import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometr
 import { color, float, vec3, mix, step, fract, floor, abs, smoothstep as sstep, positionLocal, positionWorld, normalWorld, mx_noise_float, bumpMap } from 'three/tsl';
 import { PIT } from './trackPath.js';
 import { nightU } from './night.js';
+import { LAND_KINDS } from './land.js';
 
 export const TERRAIN_DROP = 0.6; // ground sits this far below the verges around the track
 export const VERGE = 1.5; // flat grass beyond the wall (m)
@@ -104,11 +105,25 @@ export class TerrainField {
   }
 
   /**
-   * Ground at (x, z): { y, clear, mown }. clear = metres beyond the nearest corridor
+   * Ground at (x, z), with the land map's water (this.land, src/land.js) cut in: the
+   * ground dips well under each lake, river and the sea, outside the track's corridor.
+   */
+  sample(x, z) {
+    const s = this.sampleBase(x, z);
+    const wat = this.land?.waterAt(x, z);
+    if (wat && s.clear > 0) {
+      const t = Math.min(1, wat.w * 1.6) * Math.min(1, s.clear / 8);
+      s.y = Math.min(s.y, s.y + (wat.level - 2.5 - s.y) * t);
+    }
+    return s;
+  }
+
+  /**
+   * Ground at (x, z) without water: { y, clear, mown }. clear = metres beyond the nearest corridor
    * (< 0 inside one, Infinity far away); mown = 1 on the cut grass by the track, fading
    * to 0 in the meadow.
    */
-  sample(x, z) {
+  sampleBase(x, z) {
     const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL), R = this.reach;
     let inside = Infinity, eMin = Infinity, ws = 0, hs = 0;
     for (let gx = cx - R; gx <= cx + R; gx++) {
@@ -277,9 +292,14 @@ function foliageMaterial(tipLight, clumpScale) {
  * never in a corridor, the pit area or on a grandstand (nor where `occupied(x, z)` says a
  * real building stands; without it, city circuits keep trees out of the procedural blocks).
  */
-export function buildTrees(P, field, stands, group, trackId, scenery, occupied = null) {
-  const sc = { ...DEFAULT_SCENERY, ...(scenery ?? SCENERY[trackId]) };
-  if (sc.trees <= 0) return;
+export function buildTrees(P, field, stands, group, trackId, scenery, occupied = null, land = null) {
+  const sc = { ...DEFAULT_SCENERY, ...SCENERY[trackId], ...scenery };
+  // with a land map: trees where the map has woods (and some in parks, gardens and towns),
+  // none in fields, car parks or water; the noise forest only on unmapped land
+  const LAND_TREES = { forest: 1, scrub: 0.3, grass: 0.07, urban: 0.06, meadow: 0.04, farmland: 0.004 };
+  // (scenery.landTrees overrides per kind, e.g. { scrub: 0.02 } for open dunes)
+  const landTrees = land ? LAND_KINDS.map((k) => sc.landTrees?.[k] ?? LAND_TREES[k] ?? 0) : null;
+  if (sc.trees <= 0 && !land) return;
   const rand = rng(Math.round(P.length * 7) + 11);
   const b = P.bounds();
   const REACH = 380; // trees within this distance of the circuit
@@ -294,9 +314,16 @@ export function buildTrees(P, field, stands, group, trackId, scenery, occupied =
   for (let x = b.minX - REACH; x < b.maxX + REACH; x += spacing) {
     for (let z = b.minZ - REACH; z < b.maxZ + REACH; z += spacing) {
       const jx = x + (rand() - 0.5) * spacing * 0.9, jz = z + (rand() - 0.5) * spacing * 0.9;
-      const forest = fbm(jx / 260, jz / 260, 3) + 0.25 * noise2(jx / 45, jz / 45);
-      const r = rand();
-      if (forest < thresh + (r - 0.5) * 0.25) continue;
+      if (land?.noTrees(jx, jz)) continue;
+      const kind = land ? land.kindAt(jx, jz) : -1;
+      if (kind >= 0) {
+        if (rand() >= landTrees[kind]) continue;
+      } else {
+        if (sc.trees <= 0) continue;
+        const forest = fbm(jx / 260, jz / 260, 3) + 0.25 * noise2(jx / 45, jz / 45);
+        const r = rand();
+        if (forest < thresh + (r - 0.5) * 0.25) continue;
+      }
       const s = field.sample(jx, jz);
       if (s.clear < 14 || s.clear === Infinity && !nearTrack(field, jx, jz, REACH)) continue;
       if (s.clear !== Infinity && s.clear > REACH) continue;
@@ -311,6 +338,27 @@ export function buildTrees(P, field, stands, group, trackId, scenery, occupied =
       const width = height * (conifer ? 0.75 + rand() * 0.3 : palm ? 0.55 + rand() * 0.2 : 0.8 + rand() * 0.35);
       (conifer ? items.conifer : palm ? items.palm : items.broadleaf).push({ x: jx, y: s.y - 0.3, z: jz, height, width, yaw: rand() * Math.PI * 2, tint: rand() });
     }
+  }
+
+  // mapped tree rows (every ~7 m) and single trees
+  if (land) {
+    const one = (x, y) => {
+      const jz = -y, s = field.sample(x, jz);
+      if (s.clear < 6 || onStand(x, jz) || occupied?.(x, jz) || land.waterAt(x, jz) || land.noTrees(x, jz)) return;
+      const conifer = rand() < sc.conifer * 0.6, palm = !conifer && sc.palms && rand() < 0.8;
+      const height = conifer ? 14 + rand() * 10 : palm ? 9 + rand() * 6 : 9 + rand() * 8;
+      const width = height * (conifer ? 0.75 : palm ? 0.6 : 0.9);
+      (conifer ? items.conifer : palm ? items.palm : items.broadleaf).push({ x, y: s.y - 0.3, z: jz, height, width, yaw: rand() * Math.PI * 2, tint: rand() });
+    };
+    for (const row of land.osm.treeRows ?? []) {
+      for (let k = 2; k < row.length; k += 2) {
+        const ax = row[k - 2], ay = row[k - 1], bx = row[k], by = row[k + 1];
+        const n = Math.max(1, Math.round(Math.hypot(bx - ax, by - ay) / 7));
+        for (let t = 0; t < n; t++) one(ax + ((bx - ax) * t) / n, ay + ((by - ay) * t) / n);
+      }
+    }
+    const t1 = land.osm.trees ?? [];
+    for (let k = 0; k + 1 < t1.length; k += 2) one(t1[k], t1[k + 1]);
   }
 
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);

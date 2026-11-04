@@ -208,6 +208,11 @@ export class TrackPath {
     const want = wantedWalls(this, this.turns, this.widenScale());
     const wl = Float64Array.from(want.L);
     const wr = Float64Array.from(want.R);
+    // measured run-off widths (track edge to barrier face), later entries winning
+    this.resolveEntries(this.surfaceSpec().width, (i0, sgn, a, b, e) => {
+      const w = sgn > 0 ? wl : wr;
+      for (let d = a; d <= b; d++) w[this.wrap(i0 + d)] = this.hw + e[4] + WALL_THICKNESS / 2;
+    });
     for (let i = 0; i < N; i++) {
       const k = this.curvature[i];
       if (Math.abs(k) > 1e-6) {
@@ -409,8 +414,14 @@ export class TrackPath {
       }
       for (const [wall, lim] of [[this.wallL, limL], [this.wallR, limR]]) {
         const sm = boxFilter(minFilter(lim, 2), 2);
+        // only near samples the pit lane actually pulled in (the filters spread 4 samples):
+        // elsewhere the filtered copy differs from the wall just because its width varies
+        const near = new Uint8Array(N);
         for (let i = 0; i < N; i++) {
-          if (sm[i] < wall[i] - 0.25) {
+          if (lim[i] < wall[i] - 0.25) for (let d = -4; d <= 4; d++) near[this.wrap(i + d)] = 1;
+        }
+        for (let i = 0; i < N; i++) {
+          if (near[i] && sm[i] < wall[i] - 0.25) {
             wall[i] = Math.max(sm[i], hw + 0.45);
             this.pitWall[i] = 1;
           }
@@ -460,43 +471,55 @@ export class TrackPath {
     }
   }
 
+  /** Run-off spec: def.surfaces (src/tracks/land/<id>.js), else src/tracks/runoff.js. */
+  surfaceSpec() {
+    return this.def.surfaces ?? RUNOFF[this.def.id] ?? {};
+  }
+
   /**
-   * Gravel traps and sausage kerbs from src/tracks/runoff.js (or def.surfaces).
-   * gravelInL/R, gravelOutL/R[i]: lateral band of the gravel on that side (0 = none);
-   * sausageL/R[i]: 1 where a sausage kerb sits just behind the painted kerb.
-   * Gravel starts a strip of grass past the kerb and stops short of the barrier; it is
-   * left out where the run-off is too narrow for it (squeezed walls, pit lane, bridges),
-   * and its inner edge sweeps out to the barrier at each end of a trap.
+   * Centreline sample of an entry's `at`: a corner name (its control point), a fraction of
+   * the lap (0..1), or metres along the lap (> 1), measured along the control polyline as
+   * on the reference aerial images. -1 if a corner name is unknown.
    */
-  computeRunoff() {
-    const N = this.N, ds = this.ds, hw = this.hw;
-    const spec = this.def.surfaces ?? RUNOFF[this.def.id] ?? {};
-    // hand-placed entries, plus ones placed from the corners by the circuit's style
-    const auto = autoSurfaces(this, this.turns, spec.auto);
-    const traps = [...(spec.traps ?? []), ...auto.traps];
-    const sausages = [...(spec.sausages ?? []), ...auto.sausages];
-    this.gravelColor = spec.gravel ?? 0xab9f88;
-    this.gravelInL = new Float32Array(N);
-    this.gravelOutL = new Float32Array(N);
-    this.gravelInR = new Float32Array(N);
-    this.gravelOutR = new Float32Array(N);
-    this.sausageL = new Uint8Array(N);
-    this.sausageR = new Uint8Array(N);
-    this.sausageLat = hw + KERB_WIDTH + SAUSAGE.gap; // inner edge, from the centreline
-    this.runoffWarnings = [];
-    const corners = new Map((this.def.corners ?? []).map((c) => [c.name, c.at]));
-    // centreline sample of an `at`: a corner's control point, or a fraction of the lap
-    const apexOf = (at) => {
-      if (typeof at === 'number') return this.wrap(Math.round(at * N));
-      if (!corners.has(at)) return -1;
-      const [x, y] = this.def.points[corners.get(at)];
+  anchorIndex(at) {
+    // nearest sample, optionally only within 10% of the lap of an expected sample (so an
+    // anchor at a crossover picks the right road)
+    const nearest = (x, y, near = -1) => {
       let best = 0, bd = Infinity;
-      for (let i = 0; i < N; i++) {
+      const span = near < 0 ? this.N : Math.round(this.N * 0.1);
+      for (let k = -span; k < span; k++) {
+        const i = near < 0 ? k + span : this.wrap(near + k);
         const d = (this.px[i] - x) ** 2 + (this.pz[i] + y) ** 2;
         if (d < bd) [bd, best] = [d, i];
       }
       return best;
     };
+    if (typeof at === 'number' && at <= 1) return this.wrap(Math.round(at * this.N));
+    const pts = this.def.points;
+    if (typeof at === 'number') {
+      if (!this.polyCum) {
+        this.polyCum = [0];
+        for (let k = 1; k <= pts.length; k++) {
+          const a = pts[k - 1], b = pts[k % pts.length];
+          this.polyCum.push(this.polyCum[k - 1] + Math.hypot(b[0] - a[0], b[1] - a[1]));
+        }
+      }
+      const cum = this.polyCum, L = cum[pts.length], d = ((at % L) + L) % L;
+      let k = 0;
+      while (cum[k + 1] < d) k++;
+      const a = pts[k], b = pts[(k + 1) % pts.length], t = (d - cum[k]) / (cum[k + 1] - cum[k] || 1);
+      return nearest(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, this.wrap(Math.round((d / L) * this.N)));
+    }
+    const c = (this.def.corners ?? []).find((c) => c.name === at);
+    return c ? nearest(...pts[c.at]) : -1;
+  }
+
+  /**
+   * Resolve lap-relative entries [at, side, from, to, ...]: each(i0, sgn, a, b, entry) with
+   * a/b in samples relative to i0 and sgn +1 (left) / -1 (right), or 0 for 'apexes'.
+   */
+  resolveEntries(list, each) {
+    const ds = this.ds;
     // which way a corner turns: net curvature over 40 m either side (+ = left)
     const turnOf = (i0) => {
       let k = 0;
@@ -511,20 +534,86 @@ export class TrackPath {
       const t = turnOf(i0);
       return t === 0 ? [] : side === 'out' ? [-t] : [t];
     };
-    const resolve = (list, each) => {
-      for (const [at, side, from, to] of list ?? []) {
-        const i0 = apexOf(at);
-        if (i0 < 0) {
-          this.runoffWarnings.push(`no corner named "${at}"`);
-          continue;
-        }
-        for (const sgn of sidesOf(side, i0)) each(i0, sgn, Math.round(from / ds), Math.round(to / ds));
+    for (const e of list ?? []) {
+      const [at, side, from, to] = e;
+      const i0 = this.anchorIndex(at);
+      if (i0 < 0) {
+        (this.runoffWarnings ??= []).push(`no corner named "${at}"`);
+        continue;
       }
-    };
+      for (const sgn of sidesOf(side, i0)) each(i0, sgn, Math.round(from / ds), Math.round(to / ds), e);
+    }
+  }
 
-    const gravelIn = hw + KERB_WIDTH + 1.2; // a strip of grass between the kerb and the stones
+  /**
+   * Gravel traps and sausage kerbs from src/tracks/runoff.js (or def.surfaces).
+   * gravelInL/R, gravelOutL/R[i]: lateral band of the gravel on that side (0 = none);
+   * sausageL/R[i]: 1 where a sausage kerb sits just behind the painted kerb.
+   * Gravel starts a strip of grass past the kerb and stops short of the barrier; it is
+   * left out where the run-off is too narrow for it (squeezed walls, pit lane, bridges),
+   * and its inner edge sweeps out to the barrier at each end of a trap.
+   */
+  computeRunoff() {
+    const N = this.N, ds = this.ds, hw = this.hw;
+    const spec = this.surfaceSpec();
+    // hand-placed entries, plus ones placed from the corners by the circuit's style
+    const auto = autoSurfaces(this, this.turns, spec.auto);
+    const traps = [...(spec.traps ?? []), ...auto.traps];
+    const sausages = [...(spec.sausages ?? []), ...auto.sausages];
+    this.gravelColor = spec.gravel ?? 0xab9f88;
+    this.gravelInL = new Float32Array(N);
+    this.gravelOutL = new Float32Array(N);
+    this.gravelInR = new Float32Array(N);
+    this.gravelOutR = new Float32Array(N);
+    this.sausageL = new Uint8Array(N);
+    this.sausageR = new Uint8Array(N);
+    this.sausageLat = hw + KERB_WIDTH + SAUSAGE.gap; // inner edge, from the centreline
+    const resolve = (list, each) => this.resolveEntries(list, each);
+    this.runoffWarnings ??= [];
+
+    // paved run-off (1 = plain asphalt, 2 = painted), later entries winning
+    // kind: 'asphalt' | 'paint' | { paint: [a, b], strip: m, beyond: 'asphalt' | 'grass' }
+    // paintOutL/R: lateral offset where a painted strip (`strip` m past the kerb) ends
+    // (Infinity = painted all the way out); grassOutL/R: 1 where grass follows the strip;
+    // paintIdxL/R: which colour pair (this.paints) the paint uses.
+    this.pavedL = new Uint8Array(N);
+    this.pavedR = new Uint8Array(N);
+    this.paintOutL = new Float32Array(N).fill(Infinity);
+    this.paintOutR = new Float32Array(N).fill(Infinity);
+    this.grassOutL = new Uint8Array(N);
+    this.grassOutR = new Uint8Array(N);
+    this.paintIdxL = new Uint8Array(N);
+    this.paintIdxR = new Uint8Array(N);
+    this.paint = spec.paint ?? null;
+    // paints: [colourA, colourB, pattern] ('diagonal' | 'along' | 'solid')
+    this.paints = [[...(spec.paint ?? [0x2f6db5, 0xc8202a]), spec.paintPattern ?? 'diagonal']];
+    const paintIndex = (c, pattern = 'diagonal') => {
+      const pair = Array.isArray(c) ? [c[0], c[1] ?? c[0], pattern] : [c, c, pattern];
+      let k = this.paints.findIndex((p) => p[0] === pair[0] && p[1] === pair[1] && p[2] === pair[2]);
+      if (k < 0) k = this.paints.push(pair) - 1;
+      return k;
+    };
+    resolve(spec.paved, (i0, sgn, a, b, e) => {
+      const k = e[4], obj = k && typeof k === 'object' ? k : null;
+      const kind = obj || k === 'paint' ? 2 : 1;
+      const strip = obj ? obj.strip : e[5];
+      const w = kind === 2 && strip > 0 ? hw + KERB_WIDTH + strip : Infinity;
+      const grass = obj?.beyond === 'grass' || (!obj && e[6] === 'grass') ? 1 : 0;
+      const pi = obj?.paint !== undefined || obj?.pattern ? paintIndex(obj.paint ?? this.paints[0], obj.pattern) : 0;
+      const L = sgn > 0;
+      for (let d = a; d <= b; d++) {
+        const i = this.wrap(i0 + d);
+        (L ? this.pavedL : this.pavedR)[i] = kind;
+        (L ? this.paintOutL : this.paintOutR)[i] = w;
+        (L ? this.grassOutL : this.grassOutR)[i] = w < Infinity ? grass : 0;
+        (L ? this.paintIdxL : this.paintIdxR)[i] = pi;
+      }
+    });
+
     const taper = Math.max(1, Math.round(10 / ds));
-    resolve(traps, (i0, sgn, a, b) => {
+    resolve(traps, (i0, sgn, a, b, e) => {
+      // a strip of grass (or paved run-off) between the kerb and the stones
+      const gravelIn = hw + KERB_WIDTH + (e[4] ?? 1.2);
       const wall = sgn > 0 ? this.wallL : this.wallR, tyre = sgn > 0 ? this.tyreL : this.tyreR;
       const open = sgn > 0 ? this.openL : this.openR;
       const pitSide = this.pit && this.pit.side === sgn;
@@ -576,6 +665,7 @@ export class TrackPath {
     if ((left ? this.sausageL : this.sausageR)[i] && off >= this.sausageLat && off <= this.sausageLat + SAUSAGE.width) return 'sausage';
     const gIn = (left ? this.gravelInL : this.gravelInR)[i], gOut = (left ? this.gravelOutL : this.gravelOutR)[i];
     if (gOut && off >= gIn && off <= gOut) return 'gravel';
+    if ((left ? this.pavedL : this.pavedR)[i] && !((left ? this.grassOutL : this.grassOutR)[i] && off > (left ? this.paintOutL : this.paintOutR)[i])) return 'runoff';
     return this.def.scenery?.paved ? 'runoff' : 'grass';
   }
 

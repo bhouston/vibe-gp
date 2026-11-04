@@ -4,8 +4,53 @@ import {
   color, float, vec2, vec3, uv, mix, step, fract, floor, abs, smoothstep, sin,
   positionWorld, positionWorldDirection, mx_noise_float, mx_fractal_noise_float, length, max,
   positionLocal, normalLocal, texture, attribute, cameraPosition, fwidth, bumpMap,
-  positionGeometry, normalGeometry, uniform, mx_worley_noise_float,
+  positionGeometry, normalGeometry, uniform, mx_worley_noise_float, time,
 } from 'three/tsl';
+import { landSample } from './land.js';
+
+/**
+ * Tileable noise in a texture (256 x 256, repeating): r and g = 3-octave fractal noise with
+ * 4 base periods per tile, b = smooth noise with 16 periods, a = smooth noise with 32.
+ * All in 0..1. Sampling it is far cheaper to compile and run than procedural noise (the
+ * ground shader built from mx_ noise took seconds to compile), so big always-visible
+ * surfaces use it.
+ */
+const NOISE_TEX = (() => {
+  const N = 256, data = new Uint8Array(N * N * 4);
+  const hash = (x, y, s) => {
+    let h = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263) ^ Math.imul(s, 1442695041);
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  };
+  // value noise with `period` cells across the tile, wrapping
+  const vn = (x, y, period, s) => {
+    const fx = (x / N) * period, fy = (y / N) * period;
+    const xi = Math.floor(fx), yi = Math.floor(fy), tx = fx - xi, ty = fy - yi;
+    const u = tx * tx * (3 - 2 * tx), v = ty * ty * (3 - 2 * ty);
+    const w = (a) => ((a % period) + period) % period;
+    const a = hash(w(xi), w(yi), s), b = hash(w(xi + 1), w(yi), s), c = hash(w(xi), w(yi + 1), s), d = hash(w(xi + 1), w(yi + 1), s);
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+  };
+  const fbm = (x, y, s) => (vn(x, y, 4, s) * 0.57 + vn(x, y, 8, s + 1) * 0.29 + vn(x, y, 16, s + 2) * 0.14);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const k = (y * N + x) * 4;
+      data[k] = Math.round(255 * fbm(x, y, 11));
+      data[k + 1] = Math.round(255 * fbm(x, y, 37));
+      data[k + 2] = Math.round(255 * vn(x, y, 16, 71));
+      data[k + 3] = Math.round(255 * vn(x, y, 32, 93));
+    }
+  }
+  const t = new THREE.DataTexture(data, N, N, THREE.RGBAFormat, THREE.UnsignedByteType);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.LinearFilter;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true;
+  t.needsUpdate = true;
+  return t;
+})();
+/** Sample the noise texture at world xz `p` scaled by `s` (texture tiles per metre). */
+const tnoise = (p, s) => texture(NOISE_TEX, p.mul(s));
 
 /** Tarmac: fine grain noise + a darker rubbered-in racing line. */
 export function asphaltMaterial() {
@@ -94,9 +139,10 @@ export function grassMaterial(ground = 'grass') {
   const dist = length(cameraPosition.sub(positionWorld));
   const near = smoothstep(220.0, 30.0, dist); // blade-scale detail only up close
 
-  const macro = mx_fractal_noise_float(p.mul(0.0025), 3).mul(0.5).add(0.5); // ~400 m
-  const mid = mx_fractal_noise_float(p.mul(0.018), 3).mul(0.5).add(0.5); // ~50 m
-  const clump = mx_noise_float(p.mul(0.9)).mul(0.5).add(0.5); // ~1 m tufts
+  // (noise from the noise texture: see NOISE_TEX)
+  const macro = tnoise(p, 0.0025 / 4).r; // ~400 m
+  const mid = tnoise(p, 0.018 / 4).g; // ~50 m
+  const clump = tnoise(p, 0.9 / 16).b; // ~1 m tufts
 
   let meadow, lawn;
   if (ground === 'desert') {
@@ -127,16 +173,28 @@ export function grassMaterial(ground = 'grass') {
   c = c.mul(lean.mul(0.16).mul(stripeFade).add(1.0));
 
   // tufts: a little light/dark variation, stronger in the meadow
-  const patchy = mx_noise_float(p.mul(0.25)).mul(0.5); // ~4 m wear and growth patches
+  const patchy = tnoise(p, 0.25 / 32).a.mul(0.5); // ~4 m wear and growth patches
   const tuft = clump.sub(0.5).add(patchy).mul(mix(float(0.24), float(0.14), mown)).mul(near);
   c = c.mul(tuft.add(1.0));
-  m.colorNode = c;
-  m.roughnessNode = mix(float(0.97), float(0.9), mown);
+  const land = landBlend(c, mix(float(0.97), float(0.9), mown));
+  m.colorNode = land.color;
+  m.roughnessNode = land.rough;
   m.metalnessNode = float(0.0);
   // blade-scale bumpiness breaks up the flat, plastic sheen in low sun
-  const blades = mx_noise_float(p.mul(6.0)).mul(0.6).add(mx_noise_float(p.mul(19.0)).mul(0.4));
+  const blades = tnoise(p, 6.0 / 16).b.mul(0.6).add(tnoise(p, 19.0 / 32).a.mul(0.4));
   m.normalNode = bumpMap(blades.mul(near), 0.35);
   return m;
+}
+
+/**
+ * Blend the real land cover (src/land.js: woods, fields, car parks, roads, towns...) over
+ * a ground colour. The land's look is baked into a texture per track, so this is one
+ * lookup plus a little grain. Returns { color, rough } nodes.
+ */
+export function landBlend(base, baseRough) {
+  const grain = tnoise(positionWorld.xz, 1.3 / 16).b.sub(0.5).mul(0.16).add(1.0);
+  const t = landSample.a;
+  return { color: mix(base, landSample.rgb.mul(grain), t), rough: mix(baseRough, float(0.9), t) };
 }
 
 /**
@@ -176,8 +234,9 @@ export function pavedMaterial({ paint = [0x35587e, 0x474b52], glow = null } = {}
   const wear = mx_fractal_noise_float(p.mul(vec2(0.6, 0.6)), 3).mul(0.5).add(0.5);
   painted = mix(painted, color(0x1f2022), smoothstep(0.62, 0.85, wear).mul(0.55));
   painted = painted.mul(grain.mul(0.1).add(0.95));
-  m.colorNode = mix(ground, painted, runoff);
-  m.roughnessNode = mix(mix(float(0.88), float(0.8), plaza), float(0.62), runoff).sub(grain.mul(0.06));
+  const land = landBlend(mix(ground, painted, runoff), mix(mix(float(0.88), float(0.8), plaza), float(0.62), runoff).sub(grain.mul(0.06)));
+  m.colorNode = land.color;
+  m.roughnessNode = land.rough;
   m.metalnessNode = float(0.0);
   m.normalNode = bumpMap(grain.mul(near), 0.15);
 
@@ -190,6 +249,59 @@ export function pavedMaterial({ paint = [0x35587e, 0x474b52], glow = null } = {}
     const tint = mix(color(glow[0]), color(glow[1]), hue);
     m.emissiveNode = tint.mul(pool.mul(runoff.oneMinus()).mul(nightU).mul(0.45));
   }
+  return m;
+}
+
+/**
+ * Paved run-off between the kerb and the barrier (uv = metres along, lateral offset):
+ * plain dusty tarmac, or painted (paint = [a, b]) in 3 m diagonal bands of the two
+ * colours, worn darker where cars run wide.
+ */
+export function runoffMaterial(paint = null, pattern = 'diagonal') {
+  const m = new THREE.MeshStandardNodeMaterial();
+  const p = positionWorld.xz;
+  const dist = length(cameraPosition.sub(positionWorld));
+  const near = smoothstep(160.0, 20.0, dist);
+  const grain = mx_noise_float(p.mul(9.0)).mul(0.5).add(0.5);
+  const patches = mx_fractal_noise_float(p.mul(0.06), 3).mul(0.5).add(0.5);
+  const wear = mx_fractal_noise_float(p.mul(0.5), 3).mul(0.5).add(0.5);
+  let c;
+  if (paint) {
+    // diagonal: 3 m bands across at 45 degrees; along: 1.5 m bands parallel to the track;
+    // solid: the first colour only
+    const band = pattern === 'along' ? abs(uv().y).div(3.0) : uv().x.add(abs(uv().y)).div(6.0);
+    const aa = fwidth(band).add(0.001);
+    const b = pattern === 'solid' ? float(0) : smoothstep(float(0.5).sub(aa), float(0.5).add(aa), fract(band));
+    c = mix(color(paint[0]), color(paint[1] ?? paint[0]), b);
+    c = mix(c, color(0x26272a), smoothstep(0.62, 0.88, wear).mul(0.5));
+    c = c.mul(grain.mul(0.1).add(0.95));
+  } else {
+    // run-off tarmac: no rubber laid down, so paler and dustier than the racing surface
+    c = mix(color(0x3a3b3f), color(0x4a4b4f), grain.mul(0.5).add(patches.mul(0.5)));
+    c = mix(c, color(0x2a2b2e), smoothstep(0.65, 0.9, wear).mul(0.6));
+  }
+  m.colorNode = c;
+  m.roughnessNode = float(paint ? 0.62 : 0.85).sub(grain.mul(0.06));
+  m.metalnessNode = float(0.0);
+  m.normalNode = bumpMap(grain.mul(near), 0.12);
+  return m;
+}
+
+/**
+ * Open water: dark blue-green, nearly mirror-smooth so it picks up the sky, with two
+ * drifting layers of small ripples.
+ */
+export function waterMaterial() {
+  const m = new THREE.MeshPhysicalNodeMaterial();
+  const p = positionWorld.xz;
+  const t = time.mul(0.6);
+  const r1 = mx_noise_float(vec3(p.mul(0.45), t));
+  const r2 = mx_noise_float(vec3(p.mul(vec2(1.6, 1.1)).add(31.0), t.mul(1.7)));
+  const dist = length(cameraPosition.sub(positionWorld));
+  m.colorNode = mix(color(0x0f2a33), color(0x1c3d44), mx_fractal_noise_float(p.mul(0.01), 2).mul(0.5).add(0.5));
+  m.roughnessNode = float(0.06);
+  m.metalnessNode = float(0.0);
+  m.normalNode = bumpMap(r1.mul(0.6).add(r2.mul(0.4)).mul(smoothstep(400.0, 40.0, dist)), 0.25);
   return m;
 }
 

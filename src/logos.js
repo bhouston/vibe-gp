@@ -47,87 +47,65 @@ const rr = (g, x, y, w, h, r) => {
 /** Pick ink or a brand colour. */
 const pick = (ink, brand) => ink ?? brand;
 
-// A charging bull facing right, head down and horns forward, in a 100 x 60 box.
-function bullPath(g) {
-  g.beginPath();
-  g.moveTo(15, 20); // tail root
-  g.bezierCurveTo(10, 14, 6, 9, 3, 9); // tail swinging up and back
-  g.lineTo(1, 12);
-  g.bezierCurveTo(5, 13, 8, 17, 12, 24);
-  g.bezierCurveTo(12, 30, 14, 36, 20, 41); // rump
-  g.lineTo(3, 55); // hind leg kicking back
-  g.lineTo(5, 59);
-  g.lineTo(30, 47);
-  g.bezierCurveTo(42, 50, 54, 50, 62, 48); // belly
-  g.lineTo(62, 58); // folded foreleg
-  g.lineTo(68, 58);
-  g.lineTo(70, 49);
-  g.lineTo(95, 58); // foreleg reaching forward
-  g.lineTo(98, 54);
-  g.lineTo(76, 43);
-  g.bezierCurveTo(80, 46, 86, 50, 92, 49); // throat to muzzle
-  g.bezierCurveTo(95, 46, 94, 40, 90, 34); // face
-  g.lineTo(88, 30);
-  g.bezierCurveTo(92, 26, 96, 20, 99, 12); // horn sweeping forward
-  g.bezierCurveTo(94, 18, 88, 22, 82, 24);
-  g.bezierCurveTo(76, 16, 68, 10, 58, 7); // neck up to the hump
-  g.bezierCurveTo(44, 3, 28, 6, 20, 12); // back
-  g.closePath();
-}
+// A charging bull facing right, head down and horns forward, in a 100 x 60 box:
+// muscular hump over the shoulders, one foreleg reaching, one folded, hind leg kicking
+// back and the tail whipping up.
+const BULL = new Path2D(
+  'M20 18 C14 14 10 9 8 3 L4 4 L7 9 C10 14 13 18 16 21 ' + // tail whipping up, with its tuft
+  'C14 26 15 30 19 33 L3 46 C1 48 2 51 5 51 L25 38 ' + // hind leg kicked back
+  'L28 41 L30 55 C30 57 35 57 35 55 L34 40 ' + // planted hind leg
+  'C42 40 52 40 60 38 ' + // belly
+  'L57 46 C56 50 59 52 63 51 L67 50 L64 46 L65 40 ' + // foreleg folded under
+  'L69 41 L88 55 C90 57 93 56 93 53 L90 51 L74 38 ' + // foreleg reaching forward
+  'C76 41 80 44 85 46 C90 48 95 46 96 42 C97 38 95 34 92 30 C90 28 89 26 88 24 ' + // lowered head and muzzle
+  'C94 19 98 12 99 3 C96 10 91 16 84 19 ' + // horn sweeping forward and up
+  'C80 14 74 8 64 4 C54 1 40 4 30 10 C26 13 23 15 20 18 Z' // neck, shoulder hump, sloping back
+);
 
-// A rearing horse facing left, in a 60 x 80 box.
-function horsePath(g) {
-  g.beginPath();
-  g.moveTo(16, 1); // ear
-  g.lineTo(20, 7);
-  g.bezierCurveTo(26, 10, 30, 18, 32, 26); // crest of the neck
-  g.bezierCurveTo(36, 30, 42, 34, 46, 40); // back to the rump
-  g.bezierCurveTo(50, 30, 54, 18, 56, 6); // tail flung up
-  g.bezierCurveTo(60, 10, 60, 22, 56, 32);
-  g.bezierCurveTo(54, 38, 52, 42, 50, 46);
-  g.bezierCurveTo(52, 52, 54, 60, 58, 74); // kicking hind leg
-  g.lineTo(52, 78);
-  g.bezierCurveTo(50, 70, 46, 62, 42, 56);
-  g.bezierCurveTo(38, 60, 36, 68, 38, 78); // standing hind leg
-  g.lineTo(31, 79);
-  g.bezierCurveTo(30, 68, 30, 60, 30, 54);
-  g.bezierCurveTo(26, 52, 24, 48, 22, 42); // belly to chest
-  g.lineTo(12, 42); // lower foreleg, raised
-  g.lineTo(10, 52);
-  g.lineTo(5, 50);
-  g.lineTo(8, 37);
-  g.lineTo(20, 36);
-  g.lineTo(18, 32);
-  g.lineTo(8, 30); // upper foreleg, raised high
-  g.lineTo(4, 35);
-  g.lineTo(1, 31);
-  g.lineTo(7, 24);
-  g.lineTo(18, 26);
-  g.bezierCurveTo(17, 22, 15, 20, 12, 19); // throat
-  g.lineTo(4, 18); // muzzle
-  g.bezierCurveTo(2, 15, 4, 11, 8, 9);
-  g.bezierCurveTo(10, 6, 12, 4, 16, 1); // forehead
-  g.closePath();
-}
+// The prancing horse facing left, rearing on one hind leg, in a 60 x 90 box.
+const HORSE = new Path2D(
+  'M20 0 L22 5 L24 2 L25 8 C29 14 32 21 34 28 C38 34 43 39 48 44 ' + // ears, arched mane, back
+  'C51 38 51 30 52 24 C53 18 56 13 60 10 C58 15 56 20 56 26 C56 33 57 40 53 47 ' + // tail flung up
+  'C52 51 51 55 50 58 C53 62 56 66 56 70 C56 73 55 76 54 78 L50 78 L52 74 C52 70 50 66 46 62 ' + // raised hind leg
+  'C44 67 43 74 43 80 L43 88 L36 88 L37 80 C37 74 37 69 36 65 ' + // standing hind leg
+  'C33 61 30 56 28 52 ' + // belly
+  'C24 53 21 55 18 58 L14 62 L11 60 L15 55 C18 52 21 49 23 47 ' + // lower foreleg, raised
+  'C19 45 15 44 12 45 L8 48 L5 46 L9 41 C13 39 18 39 22 40 ' + // upper foreleg, raised high
+  'C22 35 21 30 19 26 C16 25 13 25 10 26 C7 26 4 25 2 23 C0 21 1 18 3 16 C8 11 13 6 18 3 Z' // throat, long face
+);
 
 /**
- * Two bulls charging at a sun, in the top ~70% of a 175 x 100 box. The sun keeps its
- * colour even in single-colour use, so the bulls still read against it.
+ * Two bulls charging head to head in front of a sun, in the top ~70% of a 175 x 100
+ * box. The sun keeps its colour even in single-colour use, so the bulls still read
+ * against it; a thin knock-out outline separates each bull from the sun.
  */
 function bullsAndSun(g, ink, bull, sun) {
   g.fillStyle = sun;
   g.beginPath();
-  g.arc(87.5, 32, 21, 0, Math.PI * 2);
+  g.arc(87.5, 28, 23, 0, Math.PI * 2);
   g.fill();
-  g.fillStyle = pick(ink, bull);
-  for (const [x, sx] of [[5, 1], [170, -1]]) {
+  for (const [x, sx] of [[7, 1], [168, -1]]) {
     g.save();
-    g.translate(x, 16);
-    g.scale(0.7 * sx, 0.7);
-    bullPath(g);
-    g.fill();
+    g.translate(x, 12);
+    g.scale(0.78 * sx, 0.78);
+    // gap between bull and sun
+    g.globalCompositeOperation = 'destination-out';
+    g.lineWidth = 3.5;
+    g.lineJoin = 'round';
+    g.stroke(BULL);
+    g.globalCompositeOperation = 'source-over';
+    g.fillStyle = pick(ink, bull);
+    g.fill(BULL);
     g.restore();
   }
+}
+
+/** A light-to-dark vertical chrome gradient over y0..y1, or the ink colour. */
+function chrome(g, ink, y0, y1, stops = ['#f4f5f7', '#b9bdc3', '#e3e5e8', '#8d9298']) {
+  if (ink) return ink;
+  const grad = g.createLinearGradient(0, y0, 0, y1);
+  stops.forEach((c, i) => grad.addColorStop(i / (stops.length - 1), c));
+  return grad;
 }
 
 /** A plain wordmark logo in one colour. */
@@ -147,7 +125,7 @@ export const LOGOS = {
       // two bulls charging at a sun, with the wordmark underneath
       bullsAndSun(g, ink, '#db0a40', '#ffcc00');
       g.fillStyle = pick(ink, '#db0a40');
-      text(g, 'Red Bull', 87.5, 80, { size: 30, font: GEO, weight: 800, maxW: 150, stretch: 'condensed' });
+      text(g, 'Red Bull', 87.5, 82, { size: 30, font: BLACK, weight: 900, maxW: 128, spacing: -0.02 });
     },
   },
   redbullText: {
@@ -349,13 +327,13 @@ export const LOGOS = {
   ferrari: {
     aspect: 0.72,
     draw(g, ink) {
-      // shield: tricolore band, yellow field with a black prancing horse, "S F" below
+      // Scuderia shield: tricolore band, yellow field, black prancing horse, "S F" below
       const w = 72;
       const shield = () => {
         g.beginPath();
-        g.moveTo(3, 3); g.lineTo(w - 3, 3); g.lineTo(w - 3, 60);
-        g.quadraticCurveTo(w - 3, 86, w / 2, 98);
-        g.quadraticCurveTo(3, 86, 3, 60);
+        g.moveTo(3, 3); g.lineTo(w - 3, 3); g.lineTo(w - 3, 56);
+        g.bezierCurveTo(w - 3, 76, w - 16, 88, w / 2, 98);
+        g.bezierCurveTo(16, 88, 3, 76, 3, 56);
         g.closePath();
       };
       if (ink) {
@@ -366,20 +344,21 @@ export const LOGOS = {
         g.save();
         g.translate(w / 2, 50); g.scale(0.9, 0.93); g.translate(-w / 2, -50);
         shield(); g.clip();
-        g.fillStyle = '#fff200'; g.fillRect(0, 0, w, 100);
-        g.fillStyle = '#009246'; g.fillRect(0, 0, w / 3, 13);
-        g.fillStyle = '#ffffff'; g.fillRect(w / 3, 0, w / 3, 13);
-        g.fillStyle = '#ce2b37'; g.fillRect((2 * w) / 3, 0, w / 3, 13);
+        g.fillStyle = '#ffd400'; g.fillRect(0, 0, w, 100);
+        g.fillStyle = '#009246'; g.fillRect(0, 0, w / 3, 12);
+        g.fillStyle = '#ffffff'; g.fillRect(w / 3, 0, w / 3, 12);
+        g.fillStyle = '#ce2b37'; g.fillRect((2 * w) / 3, 0, w / 3, 12);
+        g.fillStyle = '#111'; g.fillRect(0, 12, w, 1.6);
         g.restore();
       }
       g.fillStyle = ink ? '#000' : '#111';
       g.save();
-      g.translate(17, 15);
-      g.scale(0.66, 0.66);
-      horsePath(g); g.fill();
+      g.translate(15, 15);
+      g.scale(0.72, 0.62);
+      g.fill(HORSE);
       g.restore();
-      text(g, 'S', w / 2 - 12, 78, { size: 20, font: SERIF, weight: 700 });
-      text(g, 'F', w / 2 + 12, 78, { size: 20, font: SERIF, weight: 700 });
+      text(g, 'S', w / 2 - 11, 79, { size: 17, font: SANS, weight: 900 });
+      text(g, 'F', w / 2 + 11, 79, { size: 17, font: SANS, weight: 900 });
       g.globalCompositeOperation = 'source-over';
     },
   },
@@ -574,13 +553,14 @@ export const LOGOS = {
     aspect: 4.4,
     draw(g, ink) {
       g.fillStyle = pick(ink, '#ff8000');
-      const w = text(g, 'McLaren', 18, 58, { size: 72, font: SANS, weight: 700, maxW: 330, align: 'left' });
-      // speedmark swoosh trailing off the top right of the wordmark
-      const x = 26 + w;
+      const w = text(g, 'McLaren', 12, 60, { size: 74, font: SANS, weight: 700, maxW: 330, align: 'left', spacing: -0.01 });
+      // speedmark: a crescent swoosh, fat at its right end, tapering to a point at the left
+      const x = 12 + w - 16;
       g.beginPath();
-      g.moveTo(x, 36);
-      g.bezierCurveTo(x + 30, 6, x + 66, 6, x + 80, 12);
-      g.bezierCurveTo(x + 58, 14, x + 30, 24, x + 8, 46);
+      g.moveTo(x, 42);
+      g.bezierCurveTo(x + 20, 18, x + 52, 8, x + 86, 10);
+      g.bezierCurveTo(x + 90, 14, x + 90, 22, x + 84, 26);
+      g.bezierCurveTo(x + 58, 22, x + 28, 28, x, 42);
       g.closePath();
       g.fill();
     },
@@ -764,19 +744,25 @@ export const LOGOS = {
   mercedes: {
     aspect: 1,
     draw(g, ink) {
-      // three-pointed star in a ring
-      const c = pick(ink, '#c3c7cc');
-      g.strokeStyle = c;
-      g.lineWidth = 6;
-      g.beginPath(); g.arc(50, 50, 45, 0, Math.PI * 2); g.stroke();
-      g.fillStyle = c;
-      g.beginPath();
+      // three-pointed star in a ring, each arm faceted light and dark like the chrome badge
+      g.strokeStyle = chrome(g, ink, 5, 95);
+      g.lineWidth = 5;
+      g.beginPath(); g.arc(50, 50, 44, 0, Math.PI * 2); g.stroke();
+      const R = 42, r = 6.5;
       for (let i = 0; i < 3; i++) {
         const a = -Math.PI / 2 + (i * 2 * Math.PI) / 3;
-        g.lineTo(50 + Math.cos(a) * 42, 50 + Math.sin(a) * 42);
-        g.lineTo(50 + Math.cos(a + Math.PI / 3) * 8, 50 + Math.sin(a + Math.PI / 3) * 8);
+        const tip = [50 + Math.cos(a) * R, 50 + Math.sin(a) * R];
+        for (const side of [-1, 1]) {
+          const b = a + side * (Math.PI / 3);
+          g.beginPath();
+          g.moveTo(50, 50);
+          g.lineTo(...tip);
+          g.lineTo(50 + Math.cos(b) * r, 50 + Math.sin(b) * r);
+          g.closePath();
+          g.fillStyle = ink ?? (side < 0 ? '#f2f3f5' : '#9ea3a9');
+          g.fill();
+        }
       }
-      g.closePath(); g.fill();
     },
   },
   petronas: {
@@ -815,23 +801,31 @@ export const LOGOS = {
   aston: {
     aspect: 3,
     draw(g, ink) {
-      // feathered wings either side of a name plate
+      // feathered wings sweeping out and up from a name plate
       const c = pick(ink, '#e8eaea');
       g.fillStyle = c;
+      const feathers = 7;
       for (const s of [-1, 1]) {
-        for (let i = 0; i < 4; i++) {
-          const y = 16 + i * 10, len = 132 - i * 28;
+        for (let i = 0; i < feathers; i++) {
+          const y = 22 + i * 6.4;
+          const len = 134 - i * 16; // upper feathers reach furthest
+          const x0 = 150 + s * 10, x1 = 150 + s * (10 + len);
+          const lift = 16 - i * 1.6; // tips sweep up
+          const t = 4.4; // feather thickness at the root, tapering to a point
+          const mx = 150 + s * (10 + len * 0.55);
           g.beginPath();
-          g.moveTo(150 + s * 26, y + 8);
-          g.lineTo(150 + s * (26 + len), y - 4 + i * 2);
-          g.lineTo(150 + s * (20 + len), y + 2 + i * 2);
-          g.lineTo(150 + s * 26, y + 14);
+          g.moveTo(x0, y);
+          g.quadraticCurveTo(mx, y - lift * 0.15, x1, y - lift);
+          g.quadraticCurveTo(mx, y + t * 0.8 - lift * 0.1, x0, y + t);
           g.closePath(); g.fill();
         }
       }
-      g.fillRect(96, 58, 108, 4);
-      g.fillRect(96, 88, 108, 4);
-      text(g, 'ASTON MARTIN', 150, 75, { size: 22, font: SANS, weight: 700, maxW: 104, spacing: 0.12 });
+      // name plate: knocked-out lettering on a solid bar
+      rr(g, 92, 66, 116, 22, 2); g.fill();
+      g.save();
+      g.globalCompositeOperation = 'destination-out';
+      text(g, 'ASTON MARTIN', 150, 77, { size: 15, font: SANS, weight: 700, maxW: 104, spacing: 0.14 });
+      g.restore();
     },
   },
   aramco: {
@@ -896,15 +890,18 @@ export const LOGOS = {
 
   // ---------------- Alpine ----------------
   alpine: {
-    aspect: 3.4,
+    aspect: 3.6,
     draw(g, ink) {
-      // the arrow "A", then the wordmark
-      g.fillStyle = pick(ink, '#0090ff');
+      // the "A" mark: two legs meeting in a point, the crossbar an arrow driving to the right
+      g.fillStyle = pick(ink, '#2173f6');
       g.beginPath();
-      g.moveTo(4, 92); g.lineTo(44, 6); g.lineTo(84, 92); g.lineTo(66, 92); g.lineTo(44, 44);
-      g.lineTo(30, 74); g.lineTo(52, 74); g.lineTo(46, 88); g.lineTo(22, 88); g.lineTo(20, 92);
-      g.closePath(); g.fill();
-      text(g, 'ALPINE', 98, 52, { size: 62, font: SANS, weight: 800, maxW: 236, align: 'left', spacing: 0.12 });
+      g.moveTo(4, 92); g.lineTo(38, 6); g.lineTo(52, 6); g.lineTo(86, 92); g.lineTo(70, 92); g.lineTo(45, 28);
+      g.lineTo(20, 92); g.closePath(); g.fill();
+      g.beginPath();
+      g.moveTo(26, 60); g.lineTo(78, 60); g.lineTo(72, 50); g.lineTo(94, 66); g.lineTo(72, 82); g.lineTo(78, 72);
+      g.lineTo(22, 72); g.closePath(); g.fill();
+      g.fillStyle = pick(ink, '#ffffff');
+      text(g, 'ALPINE', 110, 52, { size: 60, font: GEO, weight: 700, maxW: 240, align: 'left', spacing: 0.2 });
     },
   },
   bwt: word('BWT', '#e6007e', { aspect: 2.2, font: BLACK, weight: 900, size: 92 }),
@@ -930,17 +927,20 @@ export const LOGOS = {
 
   // ---------------- Williams ----------------
   williams: {
-    aspect: 4,
+    aspect: 4.2,
     draw(g, ink) {
-      // W from two chevrons, then the wordmark
-      g.fillStyle = pick(ink, '#00a3e0');
-      for (const x0 of [4, 46]) {
+      // the W mark: two overlapping chevrons in light and deep blue, then the wordmark
+      const stroke = (x0, colour) => {
+        g.fillStyle = colour;
         g.beginPath();
-        g.moveTo(x0, 12); g.lineTo(x0 + 16, 12); g.lineTo(x0 + 30, 62); g.lineTo(x0 + 44, 12); g.lineTo(x0 + 60, 12);
-        g.lineTo(x0 + 38, 90); g.lineTo(x0 + 22, 90);
+        g.moveTo(x0, 14); g.lineTo(x0 + 15, 14); g.lineTo(x0 + 29, 70); g.lineTo(x0 + 43, 14); g.lineTo(x0 + 58, 14);
+        g.lineTo(x0 + 36, 88); g.lineTo(x0 + 22, 88);
         g.closePath(); g.fill();
-      }
-      text(g, 'WILLIAMS', 118, 52, { size: 58, font: SANS, weight: 800, maxW: 276, align: 'left', spacing: 0.06 });
+      };
+      stroke(4, pick(ink, '#00a0de'));
+      stroke(36, pick(ink, '#1868db'));
+      g.fillStyle = pick(ink, '#ffffff');
+      text(g, 'WILLIAMS', 112, 52, { size: 54, font: SANS, weight: 700, maxW: 300, align: 'left', spacing: 0.16 });
     },
   },
   atlassian: {
@@ -974,8 +974,8 @@ export const LOGOS = {
     aspect: 1.75,
     draw(g, ink) {
       bullsAndSun(g, ink, '#e30a17', '#ffcc00');
-      g.fillStyle = pick(ink, '#1c3fd0');
-      text(g, 'RACING BULLS', 87.5, 82, { size: 22, font: SANS, weight: 900, maxW: 160, spacing: 0.06 });
+      g.fillStyle = pick(ink, '#ffffff');
+      text(g, 'RACING BULLS', 87.5, 83, { size: 20, font: BLACK, weight: 900, maxW: 150, spacing: 0.08 });
     },
   },
   visa: word('VISA', '#1a1f71', { aspect: 2.6, font: BLACK, weight: 900, style: 'italic', size: 92 }),
@@ -998,8 +998,9 @@ export const LOGOS = {
     aspect: 3,
     draw(g, ink) {
       g.fillStyle = pick(ink, '#e6002d');
-      text(g, 'HAAS', 150, 44, { size: 82, font: BLACK, weight: 900, maxW: 284, spacing: 0.04 });
-      g.fillRect(20, 84, 260, 8);
+      text(g, 'HAAS', 150, 38, { size: 78, font: BLACK, weight: 900, style: 'italic', maxW: 280, spacing: 0.02 });
+      g.fillStyle = pick(ink, '#ffffff');
+      text(g, 'F1 TEAM', 150, 86, { size: 22, font: SANS, weight: 800, maxW: 200, spacing: 0.5 });
     },
   },
   tgr: {
@@ -1018,11 +1019,26 @@ export const LOGOS = {
   audi: {
     aspect: 1.9,
     draw(g, ink) {
-      g.strokeStyle = pick(ink, '#c0c3c6');
-      g.lineWidth = 7;
-      for (let i = 0; i < 4; i++) {
-        g.beginPath(); g.arc(31 + i * 42.5, 50, 27, 0, Math.PI * 2); g.stroke();
-      }
+      // four interlocking chrome rings, each passing over its right-hand neighbour at the top
+      const R = 27, cx = (i) => 31 + i * 42.5;
+      const lw = 6.5;
+      const ring = (i, a0 = 0, a1 = Math.PI * 2) => {
+        g.beginPath(); g.arc(cx(i), 50, R, a0, a1);
+        // dark (or knocked-out) edge, then the chrome band
+        if (ink) {
+          g.save(); g.globalCompositeOperation = 'destination-out';
+          g.lineWidth = lw + 3; g.stroke(); g.restore();
+          g.strokeStyle = ink;
+        } else {
+          g.lineWidth = lw + 2; g.strokeStyle = '#3a3d42'; g.stroke();
+          g.strokeStyle = chrome(g, null, 50 - R, 50 + R);
+        }
+        g.lineWidth = lw; g.stroke();
+      };
+      for (let i = 0; i < 4; i++) ring(i);
+      // re-draw where the left ring crosses back over, so they weave
+      const a = Math.atan2(Math.sqrt(R * R - 21.25 * 21.25), 21.25);
+      for (let i = 0; i < 3; i++) ring(i, -a - 0.28, -a + 0.28);
     },
   },
   revolut: word('Revolut', '#191c1f', { aspect: 3.6, weight: 700 }),
@@ -1044,25 +1060,38 @@ export const LOGOS = {
   cadillac: {
     aspect: 0.82,
     draw(g, ink) {
-      // modern monochrome crest: shield outline over a chequer of blocks
-      const c = pick(ink, '#c9ccd1');
+      // monochrome crest: chrome shield outline, quartered, with barred and plain quarters
       const w = 82;
       const shield = () => {
         g.beginPath();
-        g.moveTo(6, 4); g.lineTo(w - 6, 4); g.lineTo(w - 10, 62);
-        g.quadraticCurveTo(w / 2 + 6, 90, w / 2, 97);
-        g.quadraticCurveTo(w / 2 - 6, 90, 10, 62);
+        g.moveTo(5, 4); g.lineTo(w - 5, 4); g.lineTo(w - 9, 60);
+        g.quadraticCurveTo(w - 12, 84, w / 2, 97);
+        g.quadraticCurveTo(12, 84, 9, 60);
         g.closePath();
       };
+      const light = pick(ink, '#d9dce0');
+      const dark = '#16181c';
+      if (!ink) { g.fillStyle = dark; shield(); g.fill(); }
       g.save();
       shield(); g.clip();
-      g.fillStyle = c;
-      for (let r = 0; r < 4; r++) {
-        for (let k = 0; k < 3; k++) if ((r + k) % 2 === 0) g.fillRect(6 + k * 23.3, 4 + r * 24, 23.3, 24);
+      g.fillStyle = light;
+      const mx = w / 2, my = 50;
+      // top-left and bottom-right: horizontal bars
+      for (let k = 0; k < 4; k++) {
+        g.fillRect(5, 8 + k * 11, mx - 7, 5.5);
+        g.fillRect(mx + 2, my + 4 + k * 11, mx - 7, 5.5);
       }
+      // top-right and bottom-left: a solid block with an open corner square
+      g.fillRect(mx + 2, 4, mx, my - 6);
+      g.fillRect(0, my + 2, mx - 2, 50);
+      if (ink) g.globalCompositeOperation = 'destination-out';
+      g.fillStyle = ink ? '#000' : dark;
+      g.fillRect(mx + 10, 12, 14, 14);
+      g.fillRect(mx - 24, my + 10, 14, 14);
+      g.globalCompositeOperation = 'source-over';
       g.restore();
-      g.strokeStyle = c;
-      g.lineWidth = 5;
+      g.strokeStyle = chrome(g, ink, 4, 97);
+      g.lineWidth = 4.5;
       shield(); g.stroke();
     },
   },
@@ -1093,9 +1122,16 @@ export function drawLogo(g, id, x, y, w, h, ink = null) {
   if (!logo) throw new Error(`Unknown logo "${id}"`);
   // fit the logo's natural box inside w x h, centred
   const k = Math.min(h / 100, w / (100 * logo.aspect));
-  g.save();
-  g.translate(x + (w - 100 * logo.aspect * k) / 2, y + (h - 100 * k) / 2);
-  g.scale(k, k);
-  logo.draw(g, ink);
-  g.restore();
+  const lw = 100 * logo.aspect * k, lh = 100 * k;
+  // Draw on a scratch canvas at the target's resolution first, so the logos' knock-outs
+  // (destination-out) cut only the logo, not whatever is already drawn underneath.
+  const m = g.getTransform();
+  const res = Math.max(Math.hypot(m.a, m.b), Math.hypot(m.c, m.d), 1);
+  const off = document.createElement('canvas');
+  off.width = Math.max(1, Math.ceil(lw * res));
+  off.height = Math.max(1, Math.ceil(lh * res));
+  const o = off.getContext('2d');
+  o.scale(off.width / (100 * logo.aspect), off.height / 100);
+  logo.draw(o, ink);
+  g.drawImage(off, x + (w - lw) / 2, y + (h - lh) / 2, lw, lh);
 }

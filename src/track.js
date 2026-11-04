@@ -5,7 +5,7 @@ import * as THREE from 'three/webgpu';
 import { boxGeometry, ribbonGeometry, planeXZ } from './geometry.js';
 import {
   asphaltMaterial, kerbMaterial, grassMaterial, checkerMaterial, simpleMaterial, layered,
-  gravelMaterial, sausageMaterial, pavedMaterial,
+  gravelMaterial, sausageMaterial, pavedMaterial, runoffMaterial, waterMaterial,
 } from './materials.js';
 import { buildGarageFronts } from './pitBoxes.js';
 import { buildBarriers, slopeNormal } from './barriers.js';
@@ -14,6 +14,8 @@ import { color, float, uv, mix, step, abs, fract, positionWorld, mx_noise_float,
 import { TrackPath, KERB_WIDTH, PIT, SAUSAGE, angleDiff } from './trackPath.js';
 import { buildFloodMask, applyFloodMask, buildFloodlights, buildLedStrips, nightU, floodLit } from './night.js';
 import { buildCityscape, buildCityWalls, buildTunnels } from './cityscape.js';
+import { LandMap, buildWater } from './land.js';
+import { nextFrame } from './loading.js';
 import { TerrainField, terrainGeometry, buildTrees, buildCity, TERRAIN_DROP, VERGE, SKIRT } from './terrain.js';
 
 // Night look for scenery.illuminated circuits: towers every `spacing` m, the dark beyond
@@ -54,31 +56,68 @@ function pitLaneMaterial(garageStart, pitch, garages) {
 }
 
 export class Track {
-  constructor(def) {
+  /** Build the whole circuit at once (Track.create builds it in steps, for a loading bar). */
+  constructor(def, { deferred = false } = {}) {
     this.def = def;
-    this.path = new TrackPath(def);
+    if (!deferred) for (const _ of this.steps()); // eslint-disable-line no-unused-vars
+  }
+
+  /**
+   * Build a circuit without freezing the page: between steps it waits for the browser to
+   * paint, and reports onProgress(fraction 0..1, what it is doing).
+   */
+  static async create(def, onProgress = () => {}) {
+    const t = new Track(def, { deferred: true });
+    t.timings = []; // ms spent in each step (handy when a circuit loads slowly)
+    let prev = null, t0 = performance.now();
+    for (const [f, label] of t.steps()) {
+      const now = performance.now();
+      if (prev) t.timings.push([prev, Math.round(now - t0)]);
+      prev = label;
+      onProgress(f, label);
+      await nextFrame();
+      t0 = performance.now();
+    }
+    t.timings.push([prev, Math.round(performance.now() - t0)]);
+    onProgress(1, 'Done');
+    return t;
+  }
+
+  /** The build, as a generator of [progress, label] between its stages. */
+  *steps() {
+    yield [0, 'Laying out the circuit'];
+    this.path = new TrackPath(this.def);
     this.group = new THREE.Group();
-    this.build();
+    yield* this.build();
     this.tvCams = this.placeTvCams();
   }
 
-  build() {
+  *build() {
     const P = this.path;
     const g = this.group;
 
+    yield [0.12, 'Preparing the ground'];
     // ground: a terrain heightfield following the track's height, and flat grass verges
     // at road level out past the walls (the terrain drops just below them)
     // (scenery.paved: no sand or grass anywhere, painted asphalt run-off and paved ground)
     const sc = this.def.scenery ?? {};
     const grass = sc.paved
       ? pavedMaterial({ paint: sc.paint, glow: sc.illuminated ? ILLUMINATED.glow : null }, nightU, floodLit)
-      : grassMaterial(sc.desert ? 'desert' : sc.dunes ? 'dunes' : sc.city ? 'city' : 'grass');
+      : grassMaterial(sc.desert ? 'desert' : sc.dunes ? 'dunes' : sc.cityGround ?? sc.city ? 'city' : 'grass');
     this.field = new TerrainField(P);
+    yield [0.18, 'Mapping the land around it'];
+    // real land cover (src/land.js): the terrain dips under its water, so before the mesh
+    const def = this.def;
+    this.land = def.landOsm || def.land?.areas ? new LandMap(P, def, this.field) : null;
+    this.field.land = this.land;
+    yield [0.32, 'Shaping the terrain'];
     const ground = new THREE.Mesh(terrainGeometry(this.field), grass);
     ground.receiveShadow = true;
     g.add(ground);
     for (const geo of this.vergeGeometries()) g.add(this.mesh(geo, grass));
+    if (this.land?.bodies.length) buildWater(this.land, waterMaterial(), g);
 
+    yield [0.45, 'Laying the asphalt'];
     // asphalt: uv.x = metres along, uv.y = 0 (right edge) .. 1 (left edge)
     // Flat layers a few cm apart are below depth precision from a high or distant camera,
     // so they are also layered with polygon offset: grass < road < kerbs / pit lane < paint.
@@ -99,10 +138,12 @@ export class Track {
     // gravel traps and sausage kerbs where the real circuit has them (src/tracks/runoff.js)
     this.buildRunoff();
 
+    yield [0.52, 'Building the barriers'];
     // barriers: concrete walls with ad boards, tyre stacks on the outside of corners,
     // catch fences (track walls, pit wall, pit lane walls)
     buildBarriers(P, g, this.def.kerb?.colors);
 
+    yield [0.6, 'Building the pit lane'];
     if (P.pit) this.buildPitLane();
 
     // start line, gantry, grid boxes
@@ -118,20 +159,31 @@ export class Track {
     g.add(this.gantry(start));
     g.add(this.gridSlots());
 
+    yield [0.64, 'Raising the grandstands'];
     // spectator grandstands wherever there is room beside the circuit
-    this.stands = buildGrandstands(P, g);
+    this.stands = buildGrandstands(P, g, this.land);
     // woods and tree lines beyond the circuit, clear of the stands
     // the real city (OpenStreetMap buildings, old city walls) or procedural blocks; then
     // woods and tree lines beyond the circuit, clear of the stands and buildings
-    const city = this.def.city ? buildCityscape(P, this.field, this.stands, g, this.def) : null;
-    if (city) buildCityWalls(P, this.field, g, this.def);
-    buildTrees(P, this.field, this.stands, g, this.def.id, this.def.scenery, city?.occupied);
-    if (this.def.scenery?.city && !city) buildCity(P, this.field, this.stands, g, this.def.scenery);
+    yield [0.68, 'Raising the buildings'];
+    // (other circuits: their real OpenStreetMap buildings, without the street-circuit narrowing)
+    const osmBuildings = this.def.landOsm?.buildings ?? [];
+    const city = this.def.city ? buildCityscape(P, this.field, this.stands, g, this.def)
+      : osmBuildings.length ? buildCityscape(P, this.field, this.stands, g, { ...this.def, city: { buildings: osmBuildings, walls: [] } })
+        : null;
+    if (this.def.city) buildCityWalls(P, this.field, g, this.def);
+    yield [0.78, 'Planting trees'];
+    buildTrees(P, this.field, this.stands, g, this.def.id, this.def.scenery, city?.occupied, this.land);
+    // procedural blocks where the real buildings are sparse (a big city off the map's edge)
+    if (this.def.scenery?.city && osmBuildings.length < 60 && !this.def.city) buildCity(P, this.field, this.stands, g, this.def.scenery);
+    // footbridges, road bridges and gantries over the track (src/tracks/land/<id>.js `bridges`)
+    if (this.def.land?.bridges?.length) g.add(this.overpasses(this.def.land.bridges));
     // decks under the road where the circuit crosses over itself
     if (P.bridge.some(Boolean)) g.add(this.bridges());
     // tunnels (after everything else: their shade mask darkens every material beneath them)
     if (this.def.tunnels) buildTunnels(P, g, this.def);
 
+    yield [0.88, 'Finishing touches'];
     // night races: floodlight towers, and the land beyond their reach falls into darkness
     this.floodHeads = [];
     // (scenery.illuminated: lit like Jeddah, denser towers, far more light spilling beyond
@@ -182,6 +234,57 @@ export class Track {
     g.traverse((o) => {
       if (o.isMesh) o.castShadow = o.receiveShadow = true;
     });
+    return g;
+  }
+
+  /**
+   * Structures spanning the track at lap metres: [at, kind] with kind 'foot' (a covered
+   * footbridge on stair towers), 'road' (a wide concrete road bridge on piers) or 'gantry'
+   * (a slim steel advertising gantry). They span barrier to barrier plus a few metres.
+   */
+  overpasses(list) {
+    const P = this.path, g = new THREE.Group();
+    const concrete = simpleMaterial(0xa3a19b, 0.9), steel = simpleMaterial(0x8d9298, 0.5);
+    const panel = simpleMaterial(0xe9ecef, 0.6), glass = simpleMaterial(0x4d6170, 0.25);
+    const KIND = {
+      foot: { clear: 6.2, deck: 1.0, width: 3.6, side: 2.2, mat: panel, pier: [3.2, 3.2] },
+      road: { clear: 6.0, deck: 1.6, width: 13, side: 1.1, mat: concrete, pier: [1.6, 9] },
+      gantry: { clear: 6.5, deck: 1.4, width: 1.2, side: 0, mat: steel, pier: [0.8, 0.8] },
+    };
+    const box = (w, h, d, mat, x, y, z, yaw) => {
+      const m = new THREE.Mesh(boxGeometry(w, h, d), mat);
+      m.position.set(x, y, z);
+      m.rotation.y = yaw;
+      m.castShadow = m.receiveShadow = true;
+      g.add(m);
+    };
+    for (const e of list) {
+      const [at, kindName = 'foot'] = Array.isArray(e) ? e : [e];
+      const k = KIND[kindName] ?? KIND.foot;
+      const i = P.anchorIndex(at);
+      if (i < 0) continue;
+      const lx = P.leftX(i), lz = P.leftZ(i), yaw = Math.atan2(-lz, lx); // local X across the track
+      const reachL = P.wallL[i] + P.tyreL[i] + VERGE + k.pier[0] / 2, reachR = P.wallR[i] + P.tyreR[i] + VERGE + k.pier[0] / 2;
+      const span = reachL + reachR, mid = (reachL - reachR) / 2;
+      const cx = P.px[i] + lx * mid, cz = P.pz[i] + lz * mid, y0 = P.py[i] + k.clear;
+      box(span + k.pier[0], k.deck, k.width, kindName === 'road' ? concrete : steel, cx, y0 + k.deck / 2, cz, yaw);
+      if (k.side > 0) {
+        // side panels (a footbridge's enclosure, a road bridge's parapets), glazed on a footbridge
+        for (const s of [-1, 1]) {
+          const ox = P.tx[i] * s * (k.width / 2 - 0.1), oz = P.tz[i] * s * (k.width / 2 - 0.1);
+          box(span, k.side, 0.2, kindName === 'foot' ? glass : k.mat, cx + ox, y0 + k.deck + k.side / 2, cz + oz, yaw);
+        }
+        if (kindName === 'foot') box(span + 0.4, 0.25, k.width + 0.4, panel, cx, y0 + k.deck + k.side + 0.12, cz, yaw);
+      }
+      if (kindName === 'gantry') box(span * 0.8, 2.2, 0.3, panel, cx, y0 + k.deck + 1.1, cz, yaw);
+      // supports beyond each barrier, down to the ground
+      for (const [s, r] of [[1, reachL], [-1, reachR]]) {
+        const x = P.px[i] + lx * s * r, z = P.pz[i] + lz * s * r;
+        const ground = Math.min(P.py[i], this.field.sample(x, z).y) - 0.5;
+        const h = y0 - ground;
+        box(k.pier[0], h, k.pier[1], kindName === 'foot' ? panel : kindName === 'road' ? concrete : steel, x, ground + h / 2, z, yaw);
+      }
+    }
     return g;
   }
 
@@ -236,6 +339,46 @@ export class Track {
    */
   buildRunoff() {
     const P = this.path, g = this.group;
+    // paved run-off (runoff `paved` entries): from the track edge (under the kerb) out to
+    // the barrier, or to where a gravel trap starts
+    const asphaltRunoff = layered(runoffMaterial(), 1);
+    const paintMats = P.paints.map((p) => layered(runoffMaterial(p, p[2]), 1));
+    for (const side of [1, -1]) {
+      const kinds = side > 0 ? P.pavedL : P.pavedR;
+      const wall = side > 0 ? P.wallL : P.wallR, tyre = side > 0 ? P.tyreL : P.tyreR;
+      const gIn = side > 0 ? P.gravelInL : P.gravelInR, gOut = side > 0 ? P.gravelOutL : P.gravelOutR;
+      const paintOut = side > 0 ? P.paintOutL : P.paintOutR;
+      const grassOut = side > 0 ? P.grassOutL : P.grassOutR, paintIdx = side > 0 ? P.paintIdxL : P.paintIdxR;
+      const outerOf = (i) => Math.max(P.hw + 0.5, gOut[i] > 0 ? gIn[i] : wall[i] + tyre[i]);
+      // kind 1: plain asphalt (also beyond a painted strip), kind 2: painted
+      const lats = [
+        (i) => (kinds[i] === 1 ? [P.hw, outerOf(i)] : [Math.min(paintOut[i], outerOf(i)), outerOf(i)]),
+        (i) => [P.hw, Math.min(paintOut[i], outerOf(i))],
+      ];
+      // (one mesh per material: plain asphalt, then each paint colour pair)
+      const groups = [[1, asphaltRunoff, (i) => kinds[i] === 1 || (kinds[i] === 2 && !grassOut[i] && paintOut[i] < outerOf(i) - 0.3)]];
+      P.paints.forEach((_, pi) => groups.push([2, paintMats[pi], (i) => kinds[i] === 2 && paintIdx[i] === pi]));
+      for (const [kind, mat, has] of groups) {
+        for (const [i0, count] of this.runs(Array.from(kinds, (_, i) => has(i)))) {
+          const n = count - 1;
+          if (n < 2) continue;
+          const geo = ribbonGeometry(n, (k) => {
+            const i = P.wrap(i0 + k), lx = P.leftX(i), lz = P.leftZ(i), h = P.py[i] + 0.008;
+            const [la, lb] = lats[kind - 1](i);
+            const a = side * la, b = side * lb;
+            return {
+              a: [P.px[i] + lx * a, h, P.pz[i] + lz * a],
+              b: [P.px[i] + lx * b, h, P.pz[i] + lz * b],
+              na: slopeNormal(P.grade[i], P.tx[i], P.tz[i]),
+              uva: [(i0 + k) * P.ds, a],
+              uvb: [(i0 + k) * P.ds, b],
+            };
+          });
+          g.add(this.mesh(geo, mat));
+        }
+      }
+    }
+
     const gravelMat = layered(gravelMaterial(P.gravelColor), 1);
     for (const side of [1, -1]) {
       const inA = side > 0 ? P.gravelInL : P.gravelInR, outA = side > 0 ? P.gravelOutL : P.gravelOutR;
@@ -503,5 +646,6 @@ export class Track {
     });
     for (const t of this.textures ?? []) t.dispose();
     this.floodMask?.texture.dispose();
+    this.land?.dispose();
   }
 }
