@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vibe GP</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E%F0%9F%8F%81%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <div id="hud">
+      <div class="panel timing">
+        <div class="row"><span class="label">LAP</span><span id="lap">OUT</span></div>
+        <div class="row big"><span class="label">TIME</span><span id="current">--:--.---</span></div>
+        <div class="row"><span class="label">LAST</span><span id="last">--:--.---</span></div>
+        <div class="row best"><span class="label">BEST</span><span id="best">--:--.---</span></div>
+      </div>
+
+      <div class="panel dash">
+        <div class="rpm"><div id="rpm-fill"></div></div>
+        <div class="dash-row">
+          <div class="gear-box"><span id="gear">1</span><small>GEAR</small></div>
+          <div class="speed-box"><span id="speed">0</span><small>KM/H</small></div>
+        </div>
+      </div>
+
+      <div id="flash"></div>
+      <div id="surface"></div>
+
+      <div class="panel help">
+        <div><b>W / ↑</b> throttle &nbsp; <b>S / ↓</b> brake / reverse</div>
+        <div><b>A D / ← →</b> steer &nbsp; <b>Space</b> handbrake</div>
+        <div><b>C</b> camera (<span id="cam">CHASE</span>) &nbsp; <b>R</b> reset</div>
+        <div class="dim">Renderer: <span id="backend">…</span></div>
+      </div>
+      <div id="error"></div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
