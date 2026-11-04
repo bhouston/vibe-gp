@@ -12,6 +12,8 @@
 
     <div id="hud">
       <div class="panel timing">
+        <div class="row track"><span id="track-name"></span></div>
+        <div class="row team"><span id="team-name"></span></div>
         <div class="row"><span class="label">LAP</span><span id="lap">OUT</span></div>
         <div class="row big"><span class="label">TIME</span><span id="current">--:--.---</span></div>
         <div class="row"><span class="label">LAST</span><span id="last">--:--.---</span></div>
@@ -24,18 +26,37 @@
           <div class="gear-box"><span id="gear">1</span><small>GEAR</small></div>
           <div class="speed-box"><span id="speed">0</span><small>KM/H</small></div>
         </div>
+        <div class="tyres">
+          <div class="tyre-grid">
+            <div class="tyre" id="tyre-0"></div><div class="tyre" id="tyre-1"></div>
+            <div class="tyre" id="tyre-2"></div><div class="tyre" id="tyre-3"></div>
+          </div>
+          <div class="aids"><span id="aid-tc">TC</span><span id="aid-abs">ABS</span><small>TYRES °C</small></div>
+        </div>
       </div>
+
+      <div class="panel map"><svg id="minimap"></svg></div>
 
       <div id="flash"></div>
       <div id="surface"></div>
 
       <div class="panel help">
         <div><b>W / ↑</b> throttle &nbsp; <b>S / ↓</b> brake / reverse</div>
-        <div><b>A D / ← →</b> steer &nbsp; <b>Space</b> handbrake</div>
-        <div><b>C</b> camera (<span id="cam">CHASE</span>) &nbsp; <b>R</b> reset</div>
+        <div><b>A D / ← →</b> steer</div>
+        <div><b>T</b> traction / stability &nbsp; <b>B</b> brake assist</div>
+        <div><b>C</b> camera (<span id="cam">CHASE</span>) &nbsp; <b>R</b> reset &nbsp; <b>Esc</b> tracks</div>
         <div class="dim">Renderer: <span id="backend">…</span></div>
       </div>
       <div id="error"></div>
+    </div>
+
+    <div id="menu" hidden>
+      <h1>VIBE <span>GP</span></h1>
+      <p class="sub">Choose your team</p>
+      <div id="menu-teams" class="menu-row"></div>
+      <p class="sub">Choose a circuit</p>
+      <div id="menu-tracks" class="menu-row"></div>
+      <p class="hint">↑ ↓ team / circuit · ← → to choose · Enter to race · Esc in-game to come back here</p>
     </div>
 
     <script type="module" src="/src/main.js"></script>

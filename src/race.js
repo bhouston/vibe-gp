@@ -1,4 +1,4 @@
-// Lap timing for the circular track. Start/finish line is at angle 0 (+X axis).
+// Lap timing based on distance along the track centreline.
 export class LapTimer {
   constructor() {
     this.reset();
@@ -11,22 +11,23 @@ export class LapTimer {
     this.last = null;
     this.best = null;
     this.halfway = false;
-    this.prevAngle = null;
+    this.prevF = null;
     this.flash = null; // { text, until }
   }
 
-  update(pos, dt) {
+  /** s = distance along the lap (m), length = lap length (m). Line is at s = 0. */
+  update(s, length, dt) {
     this.time += dt;
-    const a = Math.atan2(pos.z, pos.x); // -PI..PI, line at 0, racing direction = increasing angle
-    if (this.prevAngle !== null) {
-      // halfway checkpoint (opposite side of the circle) stops lap cheating by reversing
-      if (Math.abs(a) > Math.PI * 0.75) this.halfway = true;
-      const crossedForward = this.prevAngle < 0 && a >= 0 && Math.abs(a) < 1;
-      const crossedBackward = this.prevAngle >= 0 && a < 0 && Math.abs(a) < 1;
+    const f = s / length;
+    if (this.prevF !== null) {
+      // halfway checkpoint stops lap cheating by reversing over the line
+      if (f > 0.4 && f < 0.6) this.halfway = true;
+      const crossedForward = this.prevF > 0.9 && f < 0.1;
+      const crossedBackward = this.prevF < 0.1 && f > 0.9;
       if (crossedForward) this.crossLine();
-      if (crossedBackward) this.halfway = false; // reversing over the line voids progress
+      if (crossedBackward) this.halfway = false;
     }
-    this.prevAngle = a;
+    this.prevF = f;
   }
 
   crossLine() {

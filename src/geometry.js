@@ -327,3 +327,34 @@ export function orientOutward(geo) {
   geo.index.needsUpdate = true;
   geo.computeVertexNormals();
 }
+
+/**
+ * Strip of quads along a sequence of samples. fn(k) returns the two edge
+ * vertices for sample k: { a, b, na, nb, uva, uvb } (positions, normals, uvs).
+ * Pass the first sample again at the end to close a loop with continuous uvs.
+ */
+export function ribbonGeometry(count, fn) {
+  const positions = [], normals = [], uvs = [], indices = [];
+  for (let k = 0; k < count; k++) {
+    const r = fn(k);
+    positions.push(...r.a, ...r.b);
+    normals.push(...r.na, ...(r.nb || r.na));
+    uvs.push(...r.uva, ...r.uvb);
+  }
+  for (let k = 0; k < count - 1; k++) {
+    const a = k * 2, b = a + 1, c = a + 2, d = a + 3;
+    indices.push(a, c, b, b, c, d);
+  }
+  fixWinding(positions, normals, indices);
+  return makeGeometry({ positions, normals, uvs, indices });
+}
+
+/** Flat rectangle in the XZ plane facing +Y. */
+export function planeXZ(minX, minZ, maxX, maxZ, y = 0) {
+  return makeGeometry({
+    positions: [minX, y, minZ, maxX, y, minZ, maxX, y, maxZ, minX, y, maxZ],
+    normals: [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0],
+    uvs: [0, 0, 1, 0, 1, 1, 0, 1],
+    indices: [0, 2, 1, 0, 3, 2],
+  });
+}

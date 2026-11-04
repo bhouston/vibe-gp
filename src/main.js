@@ -1,14 +1,50 @@
 import * as THREE from 'three/webgpu';
-import { buildTrack, startPose } from './track.js';
-import { Car } from './car.js';
+import { Track } from './track.js';
+import { TRACKS } from './tracks/index.js';
+import { TrackPath } from './trackPath.js';
+import { Car, MIRROR_LAYER } from './car.js';
 import { CarPhysics } from './physics.js';
 import { Input } from './input.js';
 import { CameraRig } from './camera.js';
-import { LapTimer } from './race.js';
+import { LapTimer, formatTime } from './race.js';
 import { Hud } from './hud.js';
 import { skyNode } from './materials.js';
+import { TEAMS, teamById, teamCarSvg } from './teams.js';
 
 const SUN_DIR = [0.45, 0.8, 0.35];
+
+const bestKey = (id) => `vibegp.best.${id}`;
+function loadBest(id) {
+  try {
+    const v = parseFloat(localStorage.getItem(bestKey(id)));
+    return Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+const TEAM_KEY = 'vibegp.team';
+function loadTeam() {
+  try {
+    return teamById(localStorage.getItem(TEAM_KEY));
+  } catch {
+    return TEAMS[0];
+  }
+}
+function saveTeam(id) {
+  try {
+    localStorage.setItem(TEAM_KEY, id);
+  } catch {
+    /* storage unavailable: team choice just isn't remembered */
+  }
+}
+
+function saveBest(id, t) {
+  try {
+    localStorage.setItem(bestKey(id), String(t));
+  } catch {
+    /* storage unavailable: best lap just isn't remembered */
+  }
+}
 
 async function start() {
   const renderer = new THREE.WebGPURenderer({ antialias: true });
@@ -26,12 +62,18 @@ async function start() {
 
   const scene = new THREE.Scene();
   scene.backgroundNode = skyNode(SUN_DIR);
-  scene.fog = new THREE.Fog(0xc4d8e6, 250, 1200);
+  scene.fog = new THREE.Fog(0xc4d8e6, 300, 1600);
+  // prefiltered sky as the environment, so glossy paint and clearcoat reflect the sky
+  const envScene = new THREE.Scene();
+  envScene.backgroundNode = skyNode(SUN_DIR);
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(envScene, 0.02).texture;
+  scene.environmentIntensity = 0.55;
 
-  const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 3000);
+  const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 4000);
+  camera.layers.enable(MIRROR_LAYER); // mirror glass is only drawn by the main view
 
-  // Lighting
-  scene.add(new THREE.HemisphereLight(0xcfe6ff, 0x4a5a3a, 1.1));
+  scene.add(new THREE.HemisphereLight(0xcfe6ff, 0x4a5a3a, 0.75));
   const sun = new THREE.DirectionalLight(0xfff2dd, 3.2);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
@@ -41,15 +83,63 @@ async function start() {
   sun.shadow.normalBias = 0.02;
   scene.add(sun, sun.target);
 
-  scene.add(buildTrack());
-
-  const car = new Car();
-  scene.add(car.group);
-  const physics = new CarPhysics(startPose());
   const input = new Input();
   const rig = new CameraRig(camera);
   const timer = new LapTimer();
   const hud = new Hud();
+
+  let track = null;
+  let physics = null;
+  let car = null;
+
+  function setTeam(team) {
+    if (car?.team.id === team.id) return;
+    if (car) {
+      scene.remove(car.group);
+      car.dispose();
+    }
+    car = new Car(team);
+    scene.add(car.group);
+    if (physics) car.update(physics, 0);
+    saveTeam(team.id);
+    hud.setTeam(team);
+  }
+  setTeam(loadTeam());
+
+  function loadTrack(def) {
+    if (track) {
+      scene.remove(track.group);
+      track.dispose();
+    }
+    track = new Track(def);
+    scene.add(track.group);
+    physics = new CarPhysics(track.path, track.path.gridPose(0));
+    rig.tvCams = track.tvCams;
+    rig.initialised = false;
+    timer.reset();
+    timer.best = loadBest(def.id);
+    hud.setTrack(track.path, def);
+  }
+
+  function resetCar() {
+    physics.reset(track.path.gridPose(0));
+    const best = timer.best;
+    timer.reset();
+    timer.best = best;
+    rig.initialised = false;
+  }
+
+  // ---- team + track selector ----
+  const menu = new Menu(TEAMS, TRACKS, car.team, {
+    onTeam: setTeam,
+    onTrack: (def) => {
+      if (!track || track.def.id !== def.id) loadTrack(def);
+      else resetCar();
+      menu.hide();
+    },
+  });
+  menu.show();
+  loadTrack(TRACKS[0]); // something to look at behind the menu
 
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
@@ -60,30 +150,47 @@ async function start() {
   const FIXED = 1 / 120;
   let acc = 0;
   let last = performance.now();
+  let orbit = 0;
+  let closeUp = 1; // 1 = orbit tight around the car (team row), 0 = wide circuit view
 
   renderer.setAnimationLoop(() => {
     const now = performance.now();
     const dt = Math.min((now - last) / 1000, 0.1);
     last = now;
 
-    if (input.hit('KeyC')) rig.next();
-    if (input.hit('KeyR')) {
-      physics.reset(startPose());
-      timer.reset();
-      rig.initialised = false;
-    }
+    if (menu.visible) {
+      menu.handleKeys(input);
+      // slow orbit behind the menu: close on the car while picking a team, wide for circuits
+      closeUp += ((menu.row === 'team' ? 1 : 0) - closeUp) * Math.min(dt * 2.5, 1);
+      orbit += dt * (0.12 + closeUp * 0.18);
+      const s = track.path.poseAt(0);
+      const p = physics.position;
+      const cx = s.x + (p.x - s.x) * closeUp, cz = s.z + (p.z - s.z) * closeUp;
+      const r = 60 + (7 - 60) * closeUp, h = 22 + (2.2 - 22) * closeUp;
+      camera.position.set(cx + Math.cos(orbit) * r, h, cz + Math.sin(orbit) * r);
+      camera.lookAt(cx, 0.5 * closeUp, cz);
+      car.update(physics, 0);
+    } else {
+      if (input.hit('Escape')) menu.show(track.def.id);
+      if (input.hit('KeyC')) rig.next();
+      if (input.hit('KeyR')) resetCar();
 
-    acc += dt;
-    const controls = input.state;
-    while (acc >= FIXED) {
-      physics.step(controls, FIXED);
-      timer.update(physics.position, FIXED);
-      acc -= FIXED;
+      acc += dt;
+      const controls = input.state;
+      while (acc >= FIXED) {
+        physics.step(controls, FIXED);
+        const prevBest = timer.best;
+        timer.update(physics.trackS, track.path.length, FIXED);
+        if (timer.best !== prevBest && timer.best !== null) {
+          saveBest(track.def.id, timer.best);
+          menu.refreshBest(track.def.id);
+        }
+        acc -= FIXED;
+      }
+      car.update(physics, dt);
+      rig.update(physics, dt, car);
     }
     input.endFrame();
-
-    car.update(physics, dt);
-    rig.update(physics, dt);
 
     // keep the shadow frustum centred on the car
     const p = physics.position;
@@ -91,9 +198,153 @@ async function start() {
     sun.target.position.set(p.x, 0, p.z);
 
     hud.update(physics, timer, rig.mode);
-    if (import.meta.env.DEV) window.__game = { physics, timer };
+    if (import.meta.env.DEV) {
+      window.__game = { physics, timer, track, loadTrack, TRACKS, menu, car, setTeam, TEAMS };
+      // automated screenshots can pin the camera: window.__fixedCam = { x, y, z, tx, ty, tz }
+      const fc = window.__fixedCam;
+      if (fc) {
+        camera.position.set(fc.x, fc.y, fc.z);
+        camera.lookAt(fc.tx, fc.ty, fc.tz);
+      }
+    }
     renderer.render(scene, camera);
+    // mirrors show up next frame; skip them when the view is too far away to see them.
+    // The shadow map was just drawn for this frame, so reuse it instead of redrawing per mirror.
+    if (camera.position.distanceTo(car.group.position) < 40) {
+      sun.shadow.autoUpdate = false;
+      car.renderMirrors(renderer, scene);
+      sun.shadow.autoUpdate = true;
+    }
   });
+}
+
+/** Full-screen menu: a row of team cards above a row of circuit cards. */
+class Menu {
+  constructor(teams, tracks, team, { onTeam, onTrack }) {
+    this.teams = teams;
+    this.tracks = tracks;
+    this.onTeam = onTeam;
+    this.onTrack = onTrack;
+    this.el = document.getElementById('menu');
+    this.rows = {
+      team: document.getElementById('menu-teams'),
+      track: document.getElementById('menu-tracks'),
+    };
+    this.row = 'team';
+    this.index = { team: 0, track: 0 };
+
+    this.teamCards = teams.map((t, i) => {
+      const card = document.createElement('button');
+      card.className = 'team-card';
+      // card highlight uses the team's most legible colour on a dark background
+      card.style.setProperty('--c1', t.id === 'redbull' ? t.ui.secondary : t.ui.primary);
+      card.style.setProperty('--c3', t.ui.accent);
+      card.innerHTML = `
+        ${teamCarSvg(t)}
+        <div class="team-name track-name">${t.name}</div>
+        <div class="track-meta">${t.car} · #${t.number}</div>
+        <div class="team-swatches">${[t.ui.primary, t.ui.secondary, t.ui.accent]
+          .map((c) => `<i style="background:${c}"></i>`).join('')}</div>`;
+      card.addEventListener('click', () => this.pickTeam(i));
+      card.addEventListener('mouseenter', () => this.focus('team', i));
+      this.rows.team.appendChild(card);
+      return card;
+    });
+
+    this.trackCards = tracks.map((def, i) => {
+      const path = new TrackPath(def);
+      const b = path.bounds();
+      const pad = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) * 0.08;
+      const vb = `${b.minX - pad} ${b.minZ - pad} ${b.maxX - b.minX + pad * 2} ${b.maxZ - b.minZ + pad * 2}`;
+      const sw = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) / 45;
+      const start = path.poseAt(0);
+      const card = document.createElement('button');
+      card.className = 'track-card';
+      card.innerHTML = `
+        <svg viewBox="${vb}" preserveAspectRatio="xMidYMid meet">
+          <path d="${path.svgPath(3)}" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linejoin="round"/>
+          <circle cx="${start.x}" cy="${start.z}" r="${sw * 1.1}" fill="#e10600"/>
+        </svg>
+        <div class="track-name">${def.name}</div>
+        <div class="track-meta">${def.country} · ${(path.length / 1000).toFixed(3)} km</div>
+        <div class="track-best">Best <span>${formatTime(loadBest(def.id))}</span></div>`;
+      card.addEventListener('click', () => this.onTrack(def));
+      card.addEventListener('mouseenter', () => this.focus('track', i));
+      this.rows.track.appendChild(card);
+      return card;
+    });
+
+    this.selectedTeam = Math.max(0, teams.findIndex((t) => t.id === team.id));
+    this.focus('track', 0);
+    this.focus('team', this.selectedTeam);
+    this.markTeam();
+  }
+
+  get visible() {
+    return !this.el.hidden;
+  }
+
+  cardsOf(row) {
+    return row === 'team' ? this.teamCards : this.trackCards;
+  }
+
+  show(currentId) {
+    const i = this.tracks.findIndex((t) => t.id === currentId);
+    if (i >= 0) this.focus('track', i);
+    this.focus('team', this.selectedTeam);
+    this.el.hidden = false;
+    document.getElementById('hud').classList.add('menu-open');
+  }
+
+  hide() {
+    this.el.hidden = true;
+    document.getElementById('hud').classList.remove('menu-open');
+  }
+
+  focus(row, i) {
+    this.row = row;
+    const cards = this.cardsOf(row);
+    this.index[row] = (i + cards.length) % cards.length;
+    cards.forEach((c, k) => c.classList.toggle('focused', k === this.index[row]));
+    for (const [name, el] of Object.entries(this.rows)) el.classList.toggle('active', name === row);
+  }
+
+  pickTeam(i) {
+    this.selectedTeam = (i + this.teams.length) % this.teams.length;
+    this.focus('team', this.selectedTeam);
+    this.markTeam();
+    this.onTeam(this.teams[this.selectedTeam]);
+  }
+
+  markTeam() {
+    this.teamCards.forEach((c, k) => c.classList.toggle('selected', k === this.selectedTeam));
+  }
+
+  refreshBest(id) {
+    const i = this.tracks.findIndex((t) => t.id === id);
+    if (i >= 0) this.trackCards[i].querySelector('.track-best span').textContent = formatTime(loadBest(id));
+  }
+
+  handleKeys(input) {
+    if (input.hit('ArrowDown') || input.hit('KeyS')) this.focus('track', this.index.track);
+    if (input.hit('ArrowUp') || input.hit('KeyW')) this.focus('team', this.index.team);
+    const onTeams = this.row === 'team';
+    const step = (input.hit('ArrowRight') || input.hit('KeyD') ? 1 : 0) - (input.hit('ArrowLeft') || input.hit('KeyA') ? 1 : 0);
+    if (step) {
+      if (onTeams) this.pickTeam(this.index.team + step);
+      else this.focus('track', this.index.track + step);
+    }
+    const n = this.cardsOf(this.row).length;
+    for (let k = 0; k < n && k < 9; k++) {
+      if (!input.hit(`Digit${k + 1}`)) continue;
+      if (onTeams) this.pickTeam(k);
+      else this.focus('track', k);
+    }
+    if (input.hit('Enter') || input.hit('Space')) {
+      if (onTeams) this.focus('track', this.index.track); // team confirmed: move on to circuits
+      else this.onTrack(this.tracks[this.index.track]);
+    }
+  }
 }
 
 start().catch((err) => {
