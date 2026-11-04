@@ -1,5 +1,7 @@
 # Vibe GP
 
+[![Vibe GP: an orange open-wheel race car on the starting grid of a street circuit](public/og-image.jpg)](https://vibe-gp.ben3d.ca)
+
 A small F1-style racing game built with [three.js](https://threejs.org/) using `WebGPURenderer` and node-based (TSL) materials. All track and car geometry is built by hand in code, and all surface detail is procedural (no textures or models).
 
 **Play it at [vibe-gp.ben3d.ca](https://vibe-gp.ben3d.ca).**
