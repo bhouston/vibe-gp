@@ -4,94 +4,14 @@
 import * as THREE from 'three/webgpu';
 import { boxGeometry, ribbonGeometry, planeXZ } from './geometry.js';
 import {
-  asphaltMaterial, kerbMaterial, grassMaterial, wallMaterial, checkerMaterial, simpleMaterial,
+  asphaltMaterial, kerbMaterial, grassMaterial, checkerMaterial, simpleMaterial, layered,
 } from './materials.js';
+import { buildGarageFronts } from './pitBoxes.js';
+import { buildBarriers, slopeNormal } from './barriers.js';
+import { buildGrandstands } from './grandstands.js';
 import { color, float, uv, mix, step, abs, fract, positionWorld, mx_noise_float, mx_fractal_noise_float } from 'three/tsl';
-import { TrackPath, KERB_WIDTH, WALL_THICKNESS, PIT, angleDiff } from './trackPath.js';
-import { TEAMS } from './teams.js';
-
-const WALL_HEIGHT = 1.1;
-const WALL_FOOT = 0.5; // walls reach this far below the road, so they never float over the grass
-const TERRAIN_DROP = 0.6; // terrain sits this far below the verges around the track
-const VERGE = 1.5; // flat grass beyond the wall (m)
-const SKIRT = 6; // then a grass skirt slopes down under the terrain over this width (m)
-
-/** Unit surface normal of a road sloping by `grade` along the unit tangent (tx, tz). */
-function slopeNormal(grade, tx, tz) {
-  const l = Math.hypot(grade, 1);
-  return [(-grade * tx) / l, 1 / l, (-grade * tz) / l];
-}
-
-function smoothstep(a, b, x) {
-  const t = Math.min(Math.max((x - a) / (b - a), 0), 1);
-  return t * t * (3 - 2 * t);
-}
-
-/**
- * Barrier along a polyline [[x, z], ...]: both faces, the top, and end caps on open
- * lines. uv.x = metres along, uv.y = 0 (foot) .. 1 (top), as wallMaterial expects.
- */
-function polyWallGeometry(pts, closed, height, thickness) {
-  const n = pts.length;
-  const t = thickness / 2;
-  const at = (k) => pts[closed ? (k + n) % n : Math.min(Math.max(k, 0), n - 1)];
-  const side = [], dist = [0];
-  for (let k = 0; k < n; k++) {
-    const a = at(k - 1), b = at(k + 1);
-    const dx = b[0] - a[0], dz = b[1] - a[1];
-    const l = Math.hypot(dx, dz) || 1;
-    side.push([dz / l, -dx / l]); // left normal
-    if (k) dist.push(dist[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]));
-  }
-  const count = closed ? n + 1 : n;
-  const idx = (k) => k % n;
-  const u = (k) => (k === n ? dist[n - 1] + Math.hypot(pts[0][0] - pts[n - 1][0], pts[0][1] - pts[n - 1][1]) : dist[k]);
-  // y is relative to each point's own foot height (pts[k][2]); the foot is sunk WALL_FOOT
-  const p = (k, off, y) => [pts[idx(k)][0] + side[idx(k)][0] * off, (pts[idx(k)][2] ?? 0) + y, pts[idx(k)][1] + side[idx(k)][1] * off];
-  const v0 = -WALL_FOOT / height;
-  const geos = [];
-  for (const sgn of [1, -1]) {
-    geos.push(ribbonGeometry(count, (k) => ({
-      a: p(k, sgn * t, -WALL_FOOT), b: p(k, sgn * t, height),
-      na: [side[idx(k)][0] * sgn, 0, side[idx(k)][1] * sgn],
-      uva: [u(k), v0], uvb: [u(k), 1],
-    })));
-  }
-  geos.push(ribbonGeometry(count, (k) => ({
-    a: p(k, -t, height), b: p(k, t, height), na: [0, 1, 0], uva: [u(k), 1], uvb: [u(k), 1],
-  })));
-  if (!closed) {
-    for (const k of [0, n - 1]) {
-      const a = at(k), b = at(k === 0 ? 1 : n - 2);
-      const dx = a[0] - b[0], dz = a[1] - b[1], l = Math.hypot(dx, dz) || 1;
-      geos.push(ribbonGeometry(2, (m) => ({
-        a: p(k, (m * 2 - 1) * t, -WALL_FOOT), b: p(k, (m * 2 - 1) * t, height),
-        na: [dx / l, 0, dz / l], uva: [u(k), v0], uvb: [u(k), 1],
-      })));
-    }
-  }
-  return mergeGeometries(geos);
-}
-
-/** Concatenate indexed geometries with position/normal/uv into one. */
-function mergeGeometries(geos) {
-  const pos = [], nor = [], uvs = [], ind = [];
-  for (const g of geos) {
-    const base = pos.length / 3;
-    pos.push(...g.attributes.position.array);
-    nor.push(...g.attributes.normal.array);
-    uvs.push(...g.attributes.uv.array);
-    for (const i of g.index.array) ind.push(base + i);
-    g.dispose();
-  }
-  const out = new THREE.BufferGeometry();
-  out.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  out.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-  out.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-  out.setIndex(ind);
-  out.computeBoundingSphere();
-  return out;
-}
+import { TrackPath, KERB_WIDTH, PIT, angleDiff } from './trackPath.js';
+import { TerrainField, terrainGeometry, buildTrees, TERRAIN_DROP, VERGE, SKIRT } from './terrain.js';
 
 /**
  * Pit lane surface. uv.x = metres along the lane, uv.y = metres across from the lane
@@ -122,14 +42,6 @@ function pitLaneMaterial(garageStart, pitch, garages) {
   return layered(m, 2);
 }
 
-/** Draw a flat ground-level material on top of the layers below it (see build()). */
-function layered(m, level) {
-  m.polygonOffset = true;
-  m.polygonOffsetFactor = -level;
-  m.polygonOffsetUnits = -level * 2;
-  return m;
-}
-
 export class Track {
   constructor(def) {
     this.def = def;
@@ -146,7 +58,8 @@ export class Track {
     // ground: a terrain heightfield following the track's height, and flat grass verges
     // at road level out past the walls (the terrain drops just below them)
     const grass = grassMaterial();
-    const ground = new THREE.Mesh(this.terrainGeometry(), grass);
+    this.field = new TerrainField(P);
+    const ground = new THREE.Mesh(terrainGeometry(this.field), grass);
     ground.receiveShadow = true;
     g.add(ground);
     for (const geo of this.vergeGeometries()) g.add(this.mesh(geo, grass));
@@ -166,11 +79,9 @@ export class Track {
       }
     }
 
-    // barrier walls: every polyline from the track path (track walls, pit wall, pit lane walls)
-    const wallMat = wallMaterial(1 / 6);
-    for (const line of P.walls) {
-      if (line.render) g.add(this.mesh(polyWallGeometry(line.pts, line.closed, WALL_HEIGHT, WALL_THICKNESS), wallMat));
-    }
+    // barriers: concrete walls with ad boards, tyre stacks on the outside of corners,
+    // catch fences (track walls, pit wall, pit lane walls)
+    buildBarriers(P, g, this.def.kerb?.colors);
 
     if (P.pit) this.buildPitLane();
 
@@ -186,6 +97,11 @@ export class Track {
     g.add(line);
     g.add(this.gantry(start));
     g.add(this.gridSlots());
+
+    // spectator grandstands wherever there is room beside the circuit
+    this.stands = buildGrandstands(P, g);
+    // woods and tree lines beyond the circuit, clear of the stands
+    buildTrees(P, this.field, this.stands, g, this.def.id);
 
     g.traverse((o) => {
       if (o.isMesh && o !== ground) o.receiveShadow = true;
@@ -242,26 +158,33 @@ export class Track {
   vergeGeometries() {
     const P = this.path, pit = P.pit;
     const geos = [];
-    // one side of a path: flat from the centre to edge(k), then down to outer(k)
+    // one side of a path: flat from the centre to edge(k), then down to outer(k).
+    // uv = (metres along, lateral offset); attribute grass = (mowing direction, stripes, mown)
     const side = (count, at, edge, outer) => {
-      geos.push(ribbonGeometry(count, (k) => {
-        const c = at(k);
-        return { a: c.p(0, 0), b: c.p(edge(k), 0), na: c.n, uva: [0, 0], uvb: [0, 0] };
-      }));
-      geos.push(ribbonGeometry(count, (k) => {
-        const c = at(k);
-        return { a: c.p(edge(k), 0), b: c.p(outer(k), -TERRAIN_DROP - 0.4), na: c.n, uva: [0, 0], uvb: [0, 0] };
-      }));
+      for (const [from, to, drop] of [[() => 0, edge, 0], [edge, outer, -TERRAIN_DROP - 0.4]]) {
+        const geo = ribbonGeometry(count, (k) => {
+          const c = at(k), a = from(k), b = to(k);
+          return { a: c.p(a, 0), b: c.p(b, drop), na: c.n, uva: [c.s, a], uvb: [c.s, b] };
+        });
+        const grass = new Float32Array(count * 8);
+        for (let k = 0; k < count; k++) {
+          const t = at(k).t;
+          grass.set([t[0], t[1], 1, 1, t[0], t[1], 1, 1], k * 8);
+        }
+        geo.setAttribute('grass', new THREE.BufferAttribute(grass, 4));
+        geos.push(geo);
+      }
     };
     const insideCap = (k, sgn) => (sgn * k > 0 ? 0.9 / Math.abs(k) : Infinity);
 
     const mainAt = (k) => {
       const i = P.wrap(k);
       const lx = P.leftX(i), lz = P.leftZ(i), h = P.py[i];
-      return { n: slopeNormal(P.grade[i], P.tx[i], P.tz[i]), p: (lat, dy) => [P.px[i] + lx * lat, h + dy, P.pz[i] + lz * lat] };
+      return { n: slopeNormal(P.grade[i], P.tx[i], P.tz[i]), t: [P.tx[i], P.tz[i]], s: k * P.ds, p: (lat, dy) => [P.px[i] + lx * lat, h + dy, P.pz[i] + lz * lat] };
     };
     for (const sgn of [1, -1]) {
-      const wall = sgn > 0 ? P.wallL : P.wallR;
+      const w0 = sgn > 0 ? P.wallL : P.wallR, ty = sgn > 0 ? P.tyreL : P.tyreR;
+      const wall = w0.map((w, i) => w + ty[i]); // concrete sits behind any tyre stack
       const minEdge = P.hw + KERB_WIDTH + 0.5;
       const cap = (k) => insideCap(P.curvature[P.wrap(k)], sgn);
       const edge = (k) => sgn * Math.max(minEdge, Math.min(wall[P.wrap(k)] + VERGE, cap(k)));
@@ -274,7 +197,7 @@ export class Track {
       for (let j = 1; j < pit.N - 1; j++) kp[j] = angleDiff(pit.heading[j + 1], pit.heading[j - 1]) / (2 * pit.ds);
       const laneAt = (j) => {
         const lx = pit.leftX(j), lz = pit.leftZ(j), h = pit.py[j];
-        return { n: slopeNormal(pit.grade[j], pit.tx[j], pit.tz[j]), p: (lat, dy) => [pit.px[j] + lx * lat, h + dy, pit.pz[j] + lz * lat] };
+        return { n: slopeNormal(pit.grade[j], pit.tx[j], pit.tz[j]), t: [pit.tx[j], pit.tz[j]], s: j * pit.ds, p: (lat, dy) => [pit.px[j] + lx * lat, h + dy, pit.pz[j] + lz * lat] };
       };
       for (const sgn of [1, -1]) {
         // the garage side reaches back under the garage block
@@ -286,104 +209,6 @@ export class Track {
       }
     }
     return geos;
-  }
-
-  /**
-   * Terrain heightfield (10 m grid). Within each path's corridor it sits TERRAIN_DROP
-   * below the lowest nearby road (hidden under the verges); further out it blends over
-   * ~150 m into a smooth inverse-distance interpolation of the whole track's heights.
-   */
-  terrainGeometry() {
-    const P = this.path, pit = P.pit;
-    const CELL = 50, BLEND = 150;
-    // reference points { x, z, h, r }: r = corridor half-width that stays under the verges
-    const refs = [];
-    for (let i = 0; i < P.N; i += 2) {
-      refs.push({ x: P.px[i], z: P.pz[i], h: P.py[i], r: Math.max(P.wallL[i], P.wallR[i]) + VERGE + SKIRT });
-    }
-    if (pit) {
-      for (let j = 0; j < pit.N; j += 4) {
-        refs.push({ x: pit.px[j], z: pit.pz[j], h: pit.py[j], r: pit.outerHw(j) + PIT.wallClear + 20 + SKIRT });
-      }
-    }
-    const grid = new Map();
-    const key = (cx, cz) => cx * 100003 + cz;
-    let rMax = 0;
-    for (const p of refs) {
-      rMax = Math.max(rMax, p.r);
-      const k = key(Math.floor(p.x / CELL), Math.floor(p.z / CELL));
-      if (!grid.has(k)) grid.set(k, []);
-      grid.get(k).push(p);
-    }
-    const far = [];
-    const farStep = Math.max(1, Math.round(25 / P.ds));
-    for (let i = 0; i < P.N; i += farStep) far.push([P.px[i], P.pz[i], P.py[i]]);
-    const L2 = 120 * 120;
-
-    const b = P.bounds();
-    const pad = 800, step = 10;
-    const x0 = b.minX - pad, z0 = b.minZ - pad;
-    const nx = Math.ceil((b.maxX + pad - x0) / step) + 1, nz = Math.ceil((b.maxZ + pad - z0) / step) + 1;
-    const pos = new Float32Array(nx * nz * 3);
-    const reach = Math.ceil((rMax + BLEND) / CELL);
-    for (let iz = 0; iz < nz; iz++) {
-      for (let ix = 0; ix < nx; ix++) {
-        const x = x0 + ix * step, z = z0 + iz * step;
-        const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
-        let inside = Infinity, eMin = Infinity, ws = 0, hs = 0;
-        for (let gx = cx - reach; gx <= cx + reach; gx++) {
-          for (let gz = cz - reach; gz <= cz + reach; gz++) {
-            const list = grid.get(key(gx, gz));
-            if (!list) continue;
-            for (const p of list) {
-              const e = Math.hypot(p.x - x, p.z - z) - p.r;
-              if (e < 0) inside = Math.min(inside, p.h);
-              else if (e < BLEND) {
-                const w = Math.exp(-e / 25);
-                ws += w;
-                hs += w * p.h;
-                eMin = Math.min(eMin, e);
-              }
-            }
-          }
-        }
-        let y;
-        if (inside < Infinity) y = inside - TERRAIN_DROP;
-        else {
-          let fw = 0, fh = 0;
-          for (const [px, pz, ph] of far) {
-            const w = 1 / ((px - x) ** 2 + (pz - z) ** 2 + L2);
-            fw += w;
-            fh += w * ph;
-          }
-          const hFar = fh / fw;
-          if (ws > 0) {
-            const t = smoothstep(0, BLEND, eMin);
-            y = (hs / ws - TERRAIN_DROP) * (1 - t) + hFar * t;
-          } else y = hFar;
-        }
-        const o = (iz * nx + ix) * 3;
-        pos[o] = x;
-        pos[o + 1] = y;
-        pos[o + 2] = z;
-      }
-    }
-    const index = new Uint32Array((nx - 1) * (nz - 1) * 6);
-    let n = 0;
-    for (let iz = 0; iz < nz - 1; iz++) {
-      for (let ix = 0; ix < nx - 1; ix++) {
-        const a = iz * nx + ix, c = a + nx;
-        index.set([a, c, a + 1, a + 1, c, c + 1], n); // counter-clockwise seen from above
-        n += 6;
-      }
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(nx * nz * 2), 2));
-    geo.setIndex(new THREE.BufferAttribute(index, 1));
-    geo.computeVertexNormals();
-    geo.computeBoundingSphere();
-    return geo;
   }
 
   /** Pit lane asphalt and markings, speed-limit lines and the garage block. */
@@ -443,23 +268,8 @@ export class Track {
       m.castShadow = true;
       g.add(m);
     }
-    // one garage per team: dark open door with the team's colour band above
-    const door = simpleMaterial(0x15161a, 0.9);
-    for (let k = 0; k < nGar; k++) {
-      const p = pit.poseAt(pit.garageStart + (k + 0.5) * pitch);
-      const grp = new THREE.Group();
-      const lat = front(p.j) - 0.1;
-      grp.position.set(p.x + pit.leftX(p.j) * o * lat, p.y, p.z + pit.leftZ(p.j) * o * lat);
-      grp.rotation.y = p.yaw; // local +X = lane's left
-      const w = pitch * 0.72;
-      const d = new THREE.Mesh(boxGeometry(0.2, 4.6, w), door);
-      d.position.set(0, 2.3, 0);
-      const team = TEAMS[k % TEAMS.length];
-      const band = new THREE.Mesh(boxGeometry(0.2, 1.1, pitch * 0.94), simpleMaterial(team.ui.primary, 0.5));
-      band.position.set(0, 5.6, 0);
-      grp.add(d, band);
-      g.add(grp);
-    }
+    // each team's own garage (open, with its name board) and pit box; spare garages closed
+    this.textures = buildGarageFronts(pit, g, front);
   }
 
   /** Overhead start gantry with five start lights, spanning the track at s = 0. */
@@ -513,7 +323,7 @@ export class Track {
     return g;
   }
 
-  /** Trackside TV camera spots every ~160 m, on the outside of the bend. */
+  /** Trackside TV camera spots every ~160 m, on the outside of the bend, between the fence and any stand. */
   placeTvCams() {
     const P = this.path;
     const cams = [];
@@ -521,8 +331,8 @@ export class Track {
     for (let i = 0; i < P.N; i += step) {
       const k = P.curvature[i];
       const side = k > 0 ? -1 : 1; // outside of the corner
-      const wall = side > 0 ? P.wallL[i] : P.wallR[i];
-      const lat = side * (wall + 8);
+      const wall = side > 0 ? P.wallL[i] + P.tyreL[i] : P.wallR[i] + P.tyreR[i];
+      const lat = side * (wall + 4.5);
       cams.push({
         x: P.px[i] + P.leftX(i) * lat,
         z: P.pz[i] + P.leftZ(i) * lat,
@@ -539,5 +349,6 @@ export class Track {
         o.material.dispose();
       }
     });
+    for (const t of this.textures ?? []) t.dispose();
   }
 }

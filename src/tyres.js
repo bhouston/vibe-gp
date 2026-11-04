@@ -20,6 +20,8 @@
 //    around 105 °C, ~1% loss below 100 °C or above 115 °C).
 //  - Contamination: driving on grass leaves dirt and clippings on the tread,
 //    costing grip until it scrubs off on clean asphalt.
+//  - Compounds and wear: soft / medium / hard trade peak grip and a cooler working
+//    window against how fast the tread wears away (see COMPOUNDS).
 
 /** Normalised Magic Formula: x is slip / peak slip, so the peak is at x = 1. */
 export class SlipCurve {
@@ -118,7 +120,7 @@ export const SURFACES = {
 
 export const TYRE = {
   FZ0: 2500, // N, reference load (≈ static corner load with fuel and driver)
-  muLongScale: 1.05, // slicks give slightly more grip under braking/traction than cornering
+  muLongScale: 1.25, // longitudinal grip relative to lateral: stronger braking and traction
   // temperature (°C)
   tOpt: 105,
   tAmbient: 25,
@@ -136,11 +138,25 @@ export const TYRE = {
   coolGrass: 60, // W/°C extra conduction into cool grass
   dirtGripLoss: 0.08, // grip lost with fully dirty tyres
   dirtCleanLength: 120, // m of clean asphalt to scrub most of it off
+  wearGripLoss: 0.12, // grip lost with a fully worn tread
+  wearSlide: 2.5, // extra wear per unit of slide past 80% of the limit
 };
 
-/** Grip multiplier from tread temperature. */
-export function tempGrip(T) {
-  const d = T - TYRE.tOpt;
+/**
+ * Dry tyre compounds, in Pirelli's sidewall colours. grip scales the peak force, tOpt
+ * moves the temperature window (softer rubber works cooler) and wear is the fraction of
+ * the tread used per km of clean driving (sliding wears it faster).
+ */
+export const COMPOUNDS = {
+  soft: { id: 'soft', name: 'SOFT', letter: 'S', hex: 0xe8202a, css: '#e8202a', grip: 1.04, tOpt: 96, wear: 0.05 },
+  medium: { id: 'medium', name: 'MEDIUM', letter: 'M', hex: 0xf5c400, css: '#f5c400', grip: 1.0, tOpt: 105, wear: 0.028 },
+  hard: { id: 'hard', name: 'HARD', letter: 'H', hex: 0xeeeeee, css: '#eeeeee', grip: 0.965, tOpt: 112, wear: 0.016 },
+};
+export const COMPOUND_LIST = [COMPOUNDS.soft, COMPOUNDS.medium, COMPOUNDS.hard];
+
+/** Grip multiplier from tread temperature (tOpt: the compound's window centre). */
+export function tempGrip(T, tOpt = TYRE.tOpt) {
+  const d = T - tOpt;
   const w = d < 0 ? TYRE.coldWidth : TYRE.hotWidth;
   return 1 - TYRE.tempLossMax * (1 - Math.exp(-((d / w) ** 2)));
 }

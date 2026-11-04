@@ -27,6 +27,8 @@ export const KERB_WIDTH = 1.6;
 export const WALL_THICKNESS = 0.6;
 export const DEFAULT_RUNOFF = 14;
 const KERB_RADIUS = 320; // corners tighter than this get kerbs (m)
+export const TYRE_DEPTH = 2.1; // depth of a tyre barrier stacked against the wall (m)
+const TYRE_RADIUS = 300; // corners tighter than this get tyre barriers on the outside (m)
 
 export const PIT = {
   hw: 3.5, // half width of the pit lane's fast lane (m)
@@ -34,8 +36,12 @@ export const PIT = {
   speedLimit: 80 / 3.6, // m/s
   wallGap: 1.6, // gap between track edge and pit lane edge needed for a pit wall (m)
   wallClear: 0.3, // outer wall face distance outside the lane edge (m)
-  garages: 10,
+  garages: 11, // one per team on the grid
   garagePitch: 24, // m of frontage per garage
+  // pit box painted on the working lane in front of each team's garage; the car's
+  // origin stops on its centre with the front axle on the stop line
+  box: { length: 7.2, width: 3.4, stopLine: 1.75 },
+  boxTol: { along: 1.6, across: 1.1, yaw: 0.45 }, // how well the car must stop to be "in the box"
 };
 
 export class TrackPath {
@@ -50,6 +56,7 @@ export class TrackPath {
     this.pit = def.pitlane ? new PitPath(this, def.pitlane) : null;
     this.computeWalls();
     this.applyPitWalls();
+    this.computeTyreBarriers();
     this.buildWallLines();
     this.buildWallIndex();
   }
@@ -306,7 +313,41 @@ export class TrackPath {
   }
 
   /**
+   * Tyre barriers on the outside of corners with full run-off: tyreL/tyreR[i] is the
+   * depth (0..TYRE_DEPTH) of the tyre stack. The collision line stays where it is (it
+   * becomes the tyres' front face); only the concrete behind is drawn further out, so
+   * a barrier is only placed where the wall has not been squeezed by another section.
+   * Runs start a little before the corner, carry on past the exit and taper at the ends.
+   */
+  computeTyreBarriers() {
+    const N = this.N, ds = this.ds;
+    const base = this.hw + KERB_WIDTH + this.runoff;
+    const before = Math.round(15 / ds), after = Math.round(45 / ds), taper = Math.max(1, Math.round(6 / ds));
+    for (const side of [1, -1]) {
+      const wall = side > 0 ? this.wallL : this.wallR;
+      const open = side > 0 ? this.openL : this.openR;
+      const pitSide = this.pit && this.pit.side === side;
+      const want = new Float64Array(N);
+      for (let i = 0; i < N; i++) {
+        const k = this.curvature[i];
+        if (k * side >= 0 || Math.abs(k) < 1 / TYRE_RADIUS) continue; // only the outside of a bend
+        for (let d = -before; d <= after; d++) want[this.wrap(i + d)] = 1;
+      }
+      for (let i = 0; i < N; i++) {
+        const roomy = wall[i] >= base - 1 && !open[i] && !(pitSide && this.pitWall[i]);
+        if (!roomy) want[i] = 0;
+      }
+      // erode then blur: the stack tapers to nothing inside the allowed stretch
+      const depth = boxFilter(minFilter(want, taper), taper);
+      for (let i = 0; i < N; i++) depth[i] = depth[i] < 0.02 ? 0 : depth[i] * TYRE_DEPTH;
+      if (side > 0) this.tyreL = depth;
+      else this.tyreR = depth;
+    }
+  }
+
+  /**
    * Barrier polylines: { pts: [[x, z, y], ...], closed, render, kind } (y = foot height).
+   * Main walls also carry idx (the centreline sample of each point) and side (+1 left).
    * kind: 'main' (track walls incl. the pit wall), 'pit' (lane's outer wall),
    * 'close' (short walls closing the run-off at the pit entry and exit).
    */
@@ -320,13 +361,16 @@ export class TrackPath {
       const pt = (i) => [this.px[i] + this.leftX(i) * side * wall[i], this.pz[i] + this.leftZ(i) * side * wall[i], this.py[i]];
       const keep = Array.from(open, (o) => !o);
       if (keep.every(Boolean)) {
-        lines.push({ pts: Array.from({ length: N }, (_, i) => pt(i)), closed: true, render: true, kind: 'main', side });
+        lines.push({ pts: Array.from({ length: N }, (_, i) => pt(i)), idx: Array.from({ length: N }, (_, i) => i), closed: true, render: true, kind: 'main', side });
         continue;
       }
       for (const [i0, count] of flagRuns(keep)) {
-        const pts = [];
-        for (let k = 0; k < count; k++) pts.push(pt(this.wrap(i0 + k)));
-        lines.push({ pts, closed: false, render: true, kind: 'main', side });
+        const pts = [], idx = [];
+        for (let k = 0; k < count; k++) {
+          idx.push(this.wrap(i0 + k));
+          pts.push(pt(idx[k]));
+        }
+        lines.push({ pts, idx, closed: false, render: true, kind: 'main', side });
         for (const i of [i0, this.wrap(i0 + count - 1)]) ends.push(pt(i));
       }
     }
@@ -666,12 +710,16 @@ export class PitPath {
       this.garageStart = mid - want / 2;
       this.garageEnd = mid + want / 2;
     }
+    this.garageCount = this.garageStart >= 0 ? PIT.garages : 0;
+    this.garagePitch = this.garageCount ? (this.garageEnd - this.garageStart) / this.garageCount : 0;
     this.apron = new Float64Array(N);
-    const ramp = 12;
+    // the apron tapers in over 12 m before the first garage, and out over a longer run
+    // after the last one so a car leaving the last box has room to pull back across
+    const rampIn = 12, rampOut = 30;
     for (let j = 0; j < N; j++) {
       const s = j * this.ds;
       if (this.garageStart < 0) break;
-      const t = Math.min(smoothstep(this.garageStart - ramp, this.garageStart, s), 1 - smoothstep(this.garageEnd, this.garageEnd + ramp, s));
+      const t = Math.min(smoothstep(this.garageStart - rampIn, this.garageStart, s), 1 - smoothstep(this.garageEnd, this.garageEnd + rampOut, s));
       this.apron[j] = PIT.apron * Math.max(0, t);
     }
   }
@@ -686,6 +734,18 @@ export class PitPath {
   /** Half width of the lane on its garage side (fast lane + working lane). */
   outerHw(j) {
     return PIT.hw + this.apron[j];
+  }
+
+  /**
+   * Pit box k (0 = the garage nearest the pit entry): centred on the working lane in
+   * front of garage k. Returns { k, s, lat, x, y, z, yaw, grade, j } or null.
+   * `lat` is the lateral offset from the lane centre (left +).
+   */
+  box(k) {
+    if (!(k >= 0 && k < this.garageCount)) return null;
+    const s = this.garageStart + (k + 0.5) * this.garagePitch;
+    const lat = this.outer * (PIT.hw + PIT.apron / 2);
+    return { k, s, lat, ...this.poseAt(s, lat) };
   }
 
   inGarage(j) {
@@ -791,7 +851,7 @@ export function angleDiff(a, b) {
   return Math.atan2(Math.sin(a - b), Math.cos(a - b));
 }
 
-function boxFilter(arr, r) {
+export function boxFilter(arr, r) {
   const N = arr.length, out = new Float64Array(N);
   for (let i = 0; i < N; i++) {
     let s = 0;
@@ -801,7 +861,7 @@ function boxFilter(arr, r) {
   return out;
 }
 
-function minFilter(arr, r) {
+export function minFilter(arr, r) {
   const N = arr.length, out = new Float64Array(N);
   for (let i = 0; i < N; i++) {
     let m = Infinity;

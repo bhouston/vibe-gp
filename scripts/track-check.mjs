@@ -12,6 +12,8 @@ import { TRACKS } from '../src/tracks/index.js';
 import { TrackPath, KERB_WIDTH, PIT } from '../src/trackPath.js';
 import { CarPhysics, PARAMS } from '../src/physics.js';
 import { formatTime } from '../src/race.js';
+import { TEAMS, teamGarage } from '../src/teams.js';
+import { PitStop } from '../src/pitStop.js';
 
 const id = process.argv[2];
 const outDir = process.argv[3] || 'track-check';
@@ -42,8 +44,19 @@ console.log(`tightest radius:  ${tight.radius.toFixed(1)} m at s=${tight.s.toFix
   console.log(`elevation:        ${P.elevationRange.toFixed(1)} m range, steepest ${(P.grade[gi] * 100).toFixed(1)}% at s=${(gi * P.ds).toFixed(0)}` +
     (P.vcurv[ci] > 0 ? `, tightest dip R ${(1 / P.vcurv[ci]).toFixed(0)} m at s=${(ci * P.ds).toFixed(0)}` : '') +
     (P.vcurv[cr] < 0 ? `, tightest crest R ${(-1 / P.vcurv[cr]).toFixed(0)} m at s=${(cr * P.ds).toFixed(0)}` : ''));
-  // a crest a car would fly off at 300 km/h
-  if (P.vcurv[cr] < 0 && (300 / 3.6) ** 2 * -P.vcurv[cr] > 9.81) problems.push(`crest at s=${(cr * P.ds).toFixed(0)} is tight enough (R ${(-1 / P.vcurv[cr]).toFixed(0)} m) to unload a car fully at 300 km/h`);
+  // crests a car would go weightless over at the speed it takes them
+  const vlim = speedProfile(P, true);
+  // the profile only limits braking: also cap how fast the car can accelerate out of corners
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 1; i <= P.N; i++) vlim[i % P.N] = Math.min(vlim[i % P.N], Math.sqrt(vlim[i - 1] ** 2 + 2 * 8 * P.ds));
+  }
+  for (let i = 0; i < P.N; i++) {
+    const v = Math.min(vlim[i], 95);
+    if (v * v * -P.vcurv[i] > 9.81) {
+      problems.push(`crest at s=${(i * P.ds).toFixed(0)} (R ${(-1 / P.vcurv[i]).toFixed(0)} m) unloads the car fully at ${(v * 3.6).toFixed(0)} km/h`);
+      break;
+    }
+  }
 }
 if (def.realLength && Math.abs(P.length - def.realLength) / def.realLength > 0.03) problems.push('lap length is more than 3% off the real length');
 if (tight.radius < 12) problems.push(`a corner is tighter than 12 m radius (s=${tight.s.toFixed(0)}) — likely a kink or a control point out of order`);
@@ -93,6 +106,68 @@ if (pit) {
     if (ps.pitWallFrames > 0) problems.push(`wall contact while driving the pit lane (${ps.pitWallFrames} frames)`);
     if (ps.pitOffFrames > 0) problems.push(`left the asphalt while driving the pit lane (${ps.pitOffFrames} frames)`);
   }
+  // every team pulls into its own box, stops, is serviced and drives out
+  for (const team of TEAMS) {
+    const k = teamGarage(team);
+    const r = simulatePitStop(k);
+    const where = r.box ? `box ${k + 1} (lane s ${r.box.s.toFixed(0)}, lap s ${pit.lapS(r.box.s).toFixed(0)})` : 'no box';
+    console.log(`pit stop ${team.name.padEnd(9)} ${where}: ` + (r.serviced ? `stopped ${r.miss.toFixed(2)} m off the marks, ${r.duration.toFixed(1)} s stop, out of the lane ${r.exited ? 'ok' : 'NOT REACHED'}` : 'NOT SERVICED'));
+    if (!r.box) problems.push(`${team.name} has no pit box (garage ${k + 1} of ${pit.garageCount})`);
+    else if (!r.serviced) problems.push(`autopilot could not stop in ${team.name}'s pit box`);
+    else if (!r.exited) problems.push(`autopilot could not leave ${team.name}'s pit box`);
+    if (r.wallFrames > 0) problems.push(`wall contact during ${team.name}'s pit stop (${r.wallFrames} frames)`);
+    if (r.offFrames > 0) problems.push(`left the asphalt during ${team.name}'s pit stop (${r.offFrames} frames)`);
+  }
+}
+
+/**
+ * Drive the pit lane from the speed-limit line, pull into box k, stop on the marks,
+ * wait for the crew, and drive out to the end of the lane.
+ */
+function simulatePitStop(k) {
+  const box = pit.box(k);
+  if (!box) return { box: null };
+  const s0 = pit.limitStart + 5;
+  const car = new CarPhysics(P, pit.poseAt(s0));
+  const stop = new PitStop();
+  stop.setBox(pit, k);
+  const dt = 1 / 120;
+  const vpit = speedProfile(pit, false, (j) => (j * pit.ds >= pit.limitStart - 5 && j * pit.ds <= pit.limitEnd ? PIT.speedLimit - 1 : 95));
+  let serviced = false, exited = false, miss = 0, wallFrames = 0, offFrames = 0;
+  for (let t = 0; t < 120 && !exited; t += dt) {
+    const pq = pit.query(car.position.x, car.position.z);
+    // ease across into the working lane over the 30 m before the box, and back out after it
+    const toBox = box.s - pq.s;
+    const look = 5 + Math.abs(car.speed) * 0.25;
+    const w = serviced ? 1 - smooth((pq.s - box.s) / 25) : smooth(1 - (toBox - 6) / 30);
+    const tgt = pit.poseAt(pq.s + look, box.lat * w);
+    // speed: limiter pace, then brake to stop with the car's origin on the box centre
+    let vt = vpit[Math.min(pit.N - 1, Math.round(pq.s / pit.ds) + 2)];
+    if (!serviced) vt = Math.min(vt, Math.sqrt(Math.max(0, 2 * 5 * toBox)));
+    const want = Math.atan2(tgt.x - car.position.x, tgt.z - car.position.z);
+    const err = Math.atan2(Math.sin(want - car.yaw), Math.cos(want - car.yaw));
+    let input = {
+      steer: Math.max(-1, Math.min(1, err * 4)),
+      throttle: car.speed < vt - 0.3 ? 1 : 0,
+      brake: car.speed > vt + 0.5 || (!serviced && toBox < 0.3) ? 1 : 0,
+    };
+    input = stop.update(car, input, dt);
+    if (stop.released) {
+      serviced = true;
+      const o = stop.offset(car);
+      miss = Math.hypot(o.along, o.across);
+    }
+    car.step(input, dt);
+    if (car.wallHit > 0.05) wallFrames++;
+    if (car.surface === 'grass') offFrames++;
+    if (serviced && pq.s > pit.limitEnd) exited = true;
+  }
+  return { box, serviced, exited, miss, duration: stop.lastStop ?? 0, wallFrames, offFrames };
+}
+
+function smooth(x) {
+  const t = Math.min(Math.max(x, 0), 1);
+  return t * t * (3 - 2 * t);
 }
 
 console.log(problems.length ? `\nPROBLEMS:\n- ${problems.join('\n- ')}` : '\nOK: no problems found');

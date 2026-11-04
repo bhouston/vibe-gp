@@ -62,8 +62,8 @@ export class Car {
     const paint = (hex, part) => (hex == null ? carbon : liveryMaterial(decorate(color(hex), part), team.finish));
     const W = team.wings;
     const wings = {
-      frontMain: paint(W.frontMain), frontFlaps: paint(W.frontFlaps), frontTop: paint(W.frontTopFlap),
-      frontEndplate: paint(W.frontEndplate, 'frontEndplate'), rearMain: paint(W.rearMain),
+      frontMain: paint(W.frontMain, 'frontMain'), frontFlaps: paint(W.frontFlaps), frontTop: paint(W.frontTopFlap),
+      frontEndplate: paint(W.frontEndplate, 'frontEndplate'), rearMain: paint(W.rearMain, 'rearMain'),
       rearFlap: paint(W.rearFlap, 'rearFlap'), rearEndplate: paint(W.rearEndplate, 'rearEndplate'),
     };
     this.mirrorPaint = liveryMaterial(color(team.colors.mirror ?? 0x111111), team.finish);
@@ -343,8 +343,10 @@ export class Car {
   buildWheels(carbon, coverMat) {
     const d = CAR_DIMS;
     // one tyre material per axle: the sidewall lettering is laid out relative to the radius
+    // (the sidewall lettering texture is shared by every tyre, so it is not disposed with the car)
     const tyreMats = { front: tyreMaterial(d.frontRadius), rear: tyreMaterial(d.rearRadius) };
-    this.textures.push(...Object.values(tyreMats).map((m) => m.userData.texture));
+    this.tyreMats = Object.values(tyreMats);
+    this.compound = null;
     const rimMat = rimMaterial();
     const brakeMat = simpleMaterial(0x1a1a1c, 0.7, 0.2);
     const corners = [
@@ -409,10 +411,25 @@ export class Car {
     for (const t of this.textures) t.dispose();
   }
 
-  /** Sync visuals with the physics state. */
-  update(state, dt) {
+  /** Sidewall colours for the compound fitted (an entry of COMPOUNDS). */
+  setCompound(compound) {
+    if (compound === this.compound) return;
+    this.compound = compound;
+    for (const m of this.tyreMats) m.userData.compound.value.setHex(compound.hex);
+  }
+
+  /** Show or hide wheel i (0 FL, 1 FR, 2 RL, 3 RR): off the car mid pit stop. */
+  setWheelVisible(i, on) {
+    this.wheels[i].spin.visible = on;
+  }
+
+  /**
+   * Sync visuals with the physics state. `lift` raises the whole car (m), for the
+   * jacks during a pit stop.
+   */
+  update(state, dt, lift = 0) {
     // ride the road: its height, and the slope along and across the car's heading
-    this.group.position.set(state.position.x, state.height ?? 0, state.position.z);
+    this.group.position.set(state.position.x, (state.height ?? 0) + lift, state.position.z);
     this.group.rotation.set(-Math.atan(state.gradeF ?? 0), state.yaw, Math.atan(state.gradeL ?? 0), 'YXZ');
     for (const w of this.wheels) {
       if (w.front) w.steer.rotation.y = state.steerAngle;

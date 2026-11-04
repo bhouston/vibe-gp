@@ -20,7 +20,7 @@
 // unloads it.
 import { CAR_DIMS } from './car.js';
 import { KERB_WIDTH, WALL_THICKNESS, PIT } from './trackPath.js';
-import { SURFACES, TYRE, tyreForce, tempGrip, peakForce } from './tyres.js';
+import { SURFACES, TYRE, COMPOUNDS, tyreForce, tempGrip, peakForce } from './tyres.js';
 
 const G = 9.81;
 const RHO = 1.225; // air density, kg/m^3
@@ -30,17 +30,19 @@ export const PARAMS = {
   yawInertia: 1300, // kg·m^2
   cgHeight: 0.29, // m
   rollStiffFront: 0.52, // share of lateral load transfer taken by the front axle
-  ClA: 4.6, // downforce coefficient × area, m^2 (≈ 2.3× weight at 300 km/h)
+  ClA: 7.5, // downforce coefficient × area, m^2 (≈ 3.8× weight at 300 km/h: more than a real F1 car, for grip)
   CdA: 1.27, // drag coefficient × area, m^2
-  aeroBalance: 0.43, // share of downforce on the front axle
-  rearGrip: 1.1, // rear tyres are wider (405 mm vs 305 mm front): more grip, a stable rear
+  aeroBalance: 0.45, // share of downforce on the front axle
+  rearGrip: 1.05, // rear tyres are wider (405 mm vs 305 mm front): more grip, a stable rear
   power: 735000, // W: ICE + ERS
   drivetrainEff: 0.92,
   maxAxleTorque: 4700, // N·m at the rear axle (first-gear torque limit)
   engineBrake: 250, // N·m at the axle with the throttle closed (incl. ERS harvest)
   lsdLock: 45, // N·m per rad/s of left/right wheel-speed difference
-  maxBrakeForce: 47000, // N at full pedal (≈ 5.6 g; tyres can't take it at low speed)
+  maxBrakeForce: 80000, // N at full pedal (≈ 9.6 g; the tyres set the real limit)
   brakeBias: 0.57, // front share of brake force
+  brakeSteerReserveFront: 0.3, // share of front grip kept for turning at full steering input
+  brakeSteerReserveRear: 0.1,
   reverseTorque: 1400, // N·m
   reverseMax: 12, // m/s
   wheelInertiaFront: 0.9, // kg·m^2 per wheel
@@ -141,7 +143,8 @@ export class CarPhysics {
     this.brake = 0;
     this.downforce = 0;
     this.tc = true; // assists (keyboard input is on/off, so these default on)
-    this.abs = true;
+    this.abs = true; // anti-lock brakes are always on
+    this.steerInput = 0;
     this.tcActive = false;
     this.absActive = false;
     this.tcGain = 1;
@@ -155,15 +158,25 @@ export class CarPhysics {
       slide: 0, // combined slip / peak slip (>1 = sliding)
       temp: TYRE.tBlanket,
       dirt: 0,
+      wear: 0, // 0 = new tread, 1 = worn out
       dist: 0, // rolled distance, drives the kerb-ridge phase
-      absGain: 1,
     }));
+    this.compound ??= COMPOUNDS.medium; // a reset keeps the compound, on a fresh set
+  }
+
+  /** A fresh set of `compound` tyres, warm from the blankets (pit stop). */
+  fitTyres(compound) {
+    this.compound = compound;
+    for (const w of this.wheels) {
+      w.temp = TYRE.tBlanket;
+      w.dirt = 0;
+      w.wear = 0;
+    }
   }
 
   step(input, dt) {
     const P = PARAMS;
     if (input.tc !== undefined) this.tc = input.tc;
-    if (input.abs !== undefined) this.abs = input.abs;
 
     // --- where the car is, and the surfaces under each wheel (once per step) ---
     this.locate();
@@ -171,6 +184,14 @@ export class CarPhysics {
     this.sampleSlope();
     this.prevPos.x = this.position.x;
     this.prevPos.z = this.position.z;
+
+    // input.hold: up on the jacks in the pit box. The car stays put and the pedals do
+    // nothing (the brake would otherwise select reverse at a standstill).
+    const yaw0 = this.yaw;
+    if (input.hold) {
+      this.holdStill();
+      input = { ...input, throttle: 0, brake: 0 };
+    }
 
     // --- pedals (rate limited); the pit limiter closes the throttle above the limit ---
     const limited = this.inPitLane && this.speed > PIT.speedLimit - 0.3;
@@ -181,6 +202,7 @@ export class CarPhysics {
     const absV = Math.abs(this.speed);
     const maxSteer = P.steerMaxHigh + (P.steerMaxLow - P.steerMaxHigh) / (1 + (absV / P.steerFadeSpeed) ** 2);
     const steerIn = input.steer ?? 0;
+    this.steerInput = steerIn;
     let target = steerIn * maxSteer;
     this.slipAngle = 0;
     if (absV > 3) {
@@ -228,7 +250,22 @@ export class CarPhysics {
     this.pitch += (clamp(-this.longAccel * 0.0012, -0.035, 0.035) - this.pitch) * kf;
     this.roll += (clamp(this.latAccel * 0.0012, -0.04, 0.04) - this.roll) * kf;
     this.heave = bump * Math.min(absV / 20, 1);
+    if (input.hold) {
+      this.holdStill();
+      this.position.x = this.prevPos.x;
+      this.position.z = this.prevPos.z;
+      this.yaw = yaw0;
+    }
     this.updateGearbox();
+  }
+
+  /** Stop all motion (car held stationary, e.g. on the jacks during a pit stop). */
+  holdStill() {
+    this.vel.x = this.vel.z = 0;
+    this.yawRate = 0;
+    this.speed = 0;
+    this.throttle = this.brake = 0;
+    for (const w of this.wheels) w.omega = 0;
   }
 
   substep(h) {
@@ -269,7 +306,8 @@ export class CarPhysics {
       let fz = Math.max(0, loads[i]);
       if (S.bump) fz *= 1 + S.bump * Math.sin((w.dist / S.bumpWavelength) * Math.PI * 2) * Math.min(Math.abs(vx) / 8, 1);
       w.load = fz;
-      w.grip = tempGrip(w.temp) * (1 - TYRE.dirtGripLoss * w.dirt) * (w.front ? 1 : P.rearGrip);
+      const c = this.compound;
+      w.grip = c.grip * tempGrip(w.temp, c.tOpt) * (1 - TYRE.dirtGripLoss * w.dirt) * (1 - TYRE.wearGripLoss * w.wear) * (w.front ? 1 : P.rearGrip);
       const peak = peakForce(S, fz) * w.grip;
       const used = peak > 0 ? Math.min(1, Math.abs(w.fy || 0) / peak) : 1;
       w.capX = peak * TYRE.muLongScale * Math.sqrt(Math.max(0.1, 1 - used * used));
@@ -315,8 +353,16 @@ export class CarPhysics {
       if (!w.front) tDrive = axleTorque / 2 + (i === 2 ? -lsd : lsd);
       const brakeShare = w.front ? P.brakeBias : 1 - P.brakeBias;
       let tBrake = (brakeForce * brakeShare * w.r) / 2;
-      // brake assist: cap pressure at what this tyre can take, then bleed it on lock-up
-      if (this.abs && tBrake > 0) tBrake = Math.min(tBrake, w.capX * w.r) * w.absGain;
+      // anti-lock brakes (always on): cap pressure at what this tyre can take,
+      // keeping some grip in reserve for cornering while the driver steers
+      if (tBrake > 0) {
+        const reserve = Math.abs(this.steerInput) * (w.front ? P.brakeSteerReserveFront : P.brakeSteerReserveRear);
+        const cap = w.capX * w.r * (1 - reserve);
+        if (tBrake > cap) {
+          tBrake = cap;
+          this.absActive = true;
+        }
+      }
       const I = w.front ? P.wheelInertiaFront : P.wheelInertiaRear;
 
       // semi-implicit wheel spin: linearise Fx(ω) about the current ω
@@ -332,6 +378,14 @@ export class CarPhysics {
       const dB = (tBrake * h) / Ieff;
       if (Math.abs(om) <= dB) om = 0;
       else om -= Math.sign(om) * dB;
+      // the wheels never lock: braking can't slow a wheel past peak-grip slip
+      if (tBrake > 0 && wvx > 0.5) {
+        const minOmega = (wvx * (1 - S.peakKappa)) / w.r;
+        if (om < minOmega) {
+          om = Math.min(minOmega, w.omega + (h * (tDrive - f0 * w.r - rollT)) / Ieff);
+          this.absActive = true;
+        }
+      }
       w.omega = om;
 
       // final tyre forces at the new wheel speed
@@ -344,11 +398,7 @@ export class CarPhysics {
       w.slipPower = Math.abs(tf.fx * (om * w.r - wvx)) + Math.abs(tf.fy * wvy);
       w.rollSpeed = Math.abs(wvx);
 
-      // assists: ABS bleeds brake pressure on lock-up, TC cuts torque on wheelspin
-      if (this.abs && tBrake > 0 && kappa < 0 && tf.slide > 1.15) {
-        w.absGain = Math.max(0.05, w.absGain - h * 25);
-        this.absActive = true;
-      } else w.absGain = Math.min(1, w.absGain + h * 6);
+      // traction control cuts torque on wheelspin
       if (!w.front && kappa > 0 && tf.slide > 1.1) spin = Math.max(spin, tf.slide);
 
       // rolling resistance acts along the wheel against its motion
@@ -469,6 +519,8 @@ export class CarPhysics {
       const d = (w.rollSpeed || 0) * dt;
       if (w.surface.dirt > 0) w.dirt += (1 - w.dirt) * Math.min(1, w.surface.dirt * d);
       else w.dirt *= Math.exp(-d / TYRE.dirtCleanLength);
+      const scrub = 1 + TYRE.wearSlide * Math.max(0, w.slide - 0.8);
+      w.wear = Math.min(1, w.wear + (d / 1000) * this.compound.wear * scrub);
     }
   }
 

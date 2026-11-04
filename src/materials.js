@@ -3,7 +3,8 @@ import * as THREE from 'three/webgpu';
 import {
   color, float, vec2, vec3, uv, mix, step, fract, floor, abs, smoothstep, sin,
   positionWorld, positionWorldDirection, mx_noise_float, mx_fractal_noise_float, length, max,
-  positionLocal, normalLocal, texture,
+  positionLocal, normalLocal, texture, attribute, cameraPosition, fwidth, bumpMap,
+  positionGeometry, normalGeometry, uniform,
 } from 'three/tsl';
 
 /** Tarmac: fine grain noise + a darker rubbered-in racing line. */
@@ -34,33 +35,55 @@ export function kerbMaterial(stripes, [a, b] = [0xd81e1e, 0xf2f2f2]) {
   return m;
 }
 
-/** Grass with mown stripes and colour variation. */
+/**
+ * Grass for the terrain and the verges. Vertex attribute `grass` = (mowX, mowZ, stripes, mown):
+ *  - mown = 1: close-cut run-off grass, brighter and even; 0: rougher meadow with
+ *    patchy colour (darker clumps, dry straw-coloured patches) at several scales.
+ *  - stripes = 1: mowing stripes in bands parallel to the track (uv.y = lateral offset).
+ *    Like real mowing stripes they come from the blades lying in alternate directions
+ *    (mow), so each band looks light when its grass leans away from the viewer and
+ *    dark when it leans towards them, and the pattern flips as the view changes.
+ * Fine detail (clumps, blade-scale bump) fades with distance so it never shimmers.
+ */
 export function grassMaterial() {
   const m = new THREE.MeshStandardNodeMaterial();
   const p = positionWorld.xz;
-  const n = mx_fractal_noise_float(p.mul(0.05), 4).mul(0.5).add(0.5);
-  const fine = mx_noise_float(p.mul(3.0)).mul(0.5).add(0.5);
-  // straight mown stripes, 8 m wide
-  const stripe = step(0.5, fract(p.x.add(p.y.mul(0.35)).div(8.0)));
-  const g1 = color(0x3f7a2c), g2 = color(0x4c8f35);
-  let c = mix(g1, g2, stripe);
-  c = mix(c, color(0x5e8a2a), n.mul(0.45));
-  c = c.mul(fine.mul(0.2).add(0.9));
-  m.colorNode = c;
-  m.roughnessNode = float(0.95);
-  return m;
-}
+  const g = attribute('grass', 'vec4');
+  const mown = g.w, striped = g.z;
+  const dist = length(cameraPosition.sub(positionWorld));
+  const near = smoothstep(220.0, 30.0, dist); // blade-scale detail only up close
 
-/** Concrete barrier wall with red/white painted band. */
-export function wallMaterial(stripes) {
-  const m = new THREE.MeshStandardNodeMaterial();
-  const v = uv().y;
-  const band = step(0.55, v);
-  const s = step(0.5, fract(uv().x.mul(stripes)));
-  const paint = mix(color(0xc81414), color(0xf5f5f5), s);
-  const grain = mx_noise_float(positionWorld.mul(4.0)).mul(0.06);
-  m.colorNode = mix(color(0xb8b8b2).add(grain), paint, band);
-  m.roughnessNode = float(0.8);
+  const macro = mx_fractal_noise_float(p.mul(0.0025), 3).mul(0.5).add(0.5); // ~400 m
+  const mid = mx_fractal_noise_float(p.mul(0.018), 3).mul(0.5).add(0.5); // ~50 m
+  const clump = mx_noise_float(p.mul(0.9)).mul(0.5).add(0.5); // ~1 m tufts
+
+  // meadow: olive to fresh green, with darker lush hollows and dry patches
+  let meadow = mix(color(0x4a6a2a), color(0x617f34), macro);
+  meadow = mix(meadow, color(0x8c8a52), smoothstep(0.6, 0.82, mid).mul(0.4));
+  meadow = mix(meadow, color(0x3a5626), smoothstep(0.42, 0.18, mid).mul(0.55));
+  // mown: shorter, fresher and more even
+  const lawn = mix(color(0x447a2c), color(0x528834), macro.mul(0.6).add(mid.mul(0.4)));
+  let c = mix(meadow, lawn, mown);
+
+  // mowing stripes: 3.5 m bands, alternate blade lean along the mowing direction
+  const band = abs(uv().y).div(3.5);
+  const aa = fwidth(band).add(0.001);
+  const dir = smoothstep(float(0.5).sub(aa), float(0.5).add(aa), fract(band)).mul(2.0).sub(1.0);
+  const view = positionWorld.xz.sub(cameraPosition.xz).normalize();
+  const lean = view.dot(vec2(g.x, g.y)).mul(dir); // + = blades lean away from the viewer: lighter
+  const stripeFade = smoothstep(450.0, 120.0, dist).mul(striped);
+  c = c.mul(lean.mul(0.16).mul(stripeFade).add(1.0));
+
+  // tufts: a little light/dark variation, stronger in the meadow
+  const patchy = mx_noise_float(p.mul(0.25)).mul(0.5); // ~4 m wear and growth patches
+  const tuft = clump.sub(0.5).add(patchy).mul(mix(float(0.24), float(0.14), mown)).mul(near);
+  c = c.mul(tuft.add(1.0));
+  m.colorNode = c;
+  m.roughnessNode = mix(float(0.97), float(0.9), mown);
+  m.metalnessNode = float(0.0);
+  // blade-scale bumpiness breaks up the flat, plastic sheen in low sun
+  const blades = mx_noise_float(p.mul(6.0)).mul(0.6).add(mx_noise_float(p.mul(19.0)).mul(0.4));
+  m.normalNode = bumpMap(blades.mul(near), 0.35);
   return m;
 }
 
@@ -130,8 +153,13 @@ export function carbonMaterial() {
   return m;
 }
 
-/** Sidewall lettering strip, repeated around the tyre: compound name + maker in compound colours. */
-function sidewallTexture(compoundHex) {
+/**
+ * Sidewall lettering strip, repeated around the tyre: "P ZERO" in white (tinted with the
+ * compound colour in the shader) and "PIRELLI" in yellow, told apart by the blue channel.
+ */
+let sidewallTex = null;
+function sidewallTexture() {
+  if (sidewallTex) return sidewallTex;
   const W = 2048, H = 128;
   const cv = document.createElement('canvas');
   cv.width = W;
@@ -139,9 +167,7 @@ function sidewallTexture(compoundHex) {
   const g = cv.getContext('2d');
   g.textBaseline = 'middle';
   g.font = 'italic 900 96px "Segoe UI", Arial, sans-serif';
-  const hex = `#${compoundHex.toString(16).padStart(6, '0')}`;
-  // two blocks per strip: "P ZERO" in the compound colour, "PIRELLI" in yellow
-  for (const [x, text, col] of [[60, 'P ZERO', hex], [560, 'PIRELLI', '#f2c200'], [1084, 'P ZERO', hex], [1584, 'PIRELLI', '#f2c200']]) {
+  for (const [x, text, col] of [[60, 'P ZERO', '#ffffff'], [560, 'PIRELLI', '#f2c200'], [1084, 'P ZERO', '#ffffff'], [1584, 'PIRELLI', '#f2c200']]) {
     g.fillStyle = col;
     g.fillText(text, x, H / 2);
   }
@@ -149,6 +175,7 @@ function sidewallTexture(compoundHex) {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = THREE.RepeatWrapping;
   tex.anisotropy = 8;
+  sidewallTex = tex;
   return tex;
 }
 
@@ -156,28 +183,32 @@ function sidewallTexture(compoundHex) {
  * Smooth slick tyre (expects tyreGeometry: uv.x around the tyre, local origin at the hub).
  * A thin compound-coloured ring and sidewall lettering sit on each sidewall; the
  * lettering also makes the wheel's rotation readable. `radius` is the outer radius.
+ * The compound colour is a uniform (m.userData.compound) so a tyre change needs no new
+ * shader; the pattern uses the raw geometry so it also works on instanced tyres.
  */
 export function tyreMaterial(radius, compoundHex = 0xd8261c) {
   const m = new THREE.MeshStandardNodeMaterial();
-  const p = positionLocal;
+  const p = positionGeometry;
+  const compound = uniform(new THREE.Color(compoundHex));
   const rr = length(p.yz).div(radius); // 0.63 at the bead, 1 on the tread
-  const side = smoothstep(0.55, 0.75, abs(normalLocal.x)); // sidewall faces only
+  const side = smoothstep(0.55, 0.75, abs(normalGeometry.x)); // sidewall faces only
   const ring = smoothstep(0.715, 0.725, rr).mul(smoothstep(0.765, 0.755, rr)).mul(side);
   // lettering band above the ring
   const v = rr.sub(0.785).div(0.085);
   const inBand = smoothstep(0.0, 0.02, v).mul(smoothstep(1.0, 0.98, v)).mul(side);
-  const tex = sidewallTexture(compoundHex);
+  const tex = sidewallTexture();
   const t = texture(tex, vec2(uv().x.mul(2.0), v.clamp(0, 1)));
+  const letters = mix(color(0xf2c200), compound, t.b); // white letters take the compound colour
   // rubber: very slightly mottled, scrubbed tread a touch lighter and glossier than the sidewall
   const grain = mx_noise_float(p.mul(60.0)).mul(0.012);
-  const tread = smoothstep(0.75, 0.55, abs(normalLocal.x));
+  const tread = smoothstep(0.75, 0.55, abs(normalGeometry.x));
   let c = mix(color(0x161617), color(0x1c1c1e), tread).add(grain);
-  c = mix(c, color(compoundHex), ring);
-  c = mix(c, t.rgb, t.a.mul(inBand));
+  c = mix(c, compound, ring);
+  c = mix(c, letters, t.a.mul(inBand));
   m.colorNode = c;
   m.roughnessNode = mix(float(0.86), float(0.7), tread);
   m.metalnessNode = float(0.0);
-  m.userData.texture = tex;
+  m.userData.compound = compound;
   return m;
 }
 
@@ -186,6 +217,18 @@ export function rimMaterial() {
   m.colorNode = color(0x9a9da3);
   m.metalnessNode = float(0.9);
   m.roughnessNode = float(0.3);
+  return m;
+}
+
+/**
+ * Draw a flat ground-level material on top of the layers below it: flat layers a few cm
+ * apart are below depth precision from a high or distant camera, so they are also
+ * layered with polygon offset (grass < road < kerbs / pit lane < paint < paint detail).
+ */
+export function layered(m, level) {
+  m.polygonOffset = true;
+  m.polygonOffsetFactor = -level;
+  m.polygonOffsetUnits = -level * 2;
   return m;
 }
 

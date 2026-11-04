@@ -78,6 +78,45 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
   font-size: 18px;
 }
 
+/* ---- next pit stop compound ---- */
+.compound-pick { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+.compound-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; margin-bottom: 6px; }
+.compound-head .label { font-size: 10px; letter-spacing: 0.14em; }
+#tyre-fitted { color: #9aa3b5; font-weight: 700; font-variant-numeric: tabular-nums; }
+#tyre-fitted i { font-style: italic; font-weight: 900; }
+.compounds { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.compound {
+  pointer-events: auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 0 4px;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #8790a3;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.15s, border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.compound svg { width: 34px; height: 34px; display: block; }
+.compound kbd { position: absolute; top: 3px; right: 5px; font: inherit; font-size: 9px; color: #5c6476; }
+.compound:hover { opacity: 0.9; }
+.compound.selected {
+  opacity: 1;
+  color: #fff;
+  border-color: var(--c);
+  background: color-mix(in srgb, var(--c) 16%, transparent);
+  transform: translateY(-1px);
+}
+.compound.selected svg { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--c) 70%, transparent)); }
+
 /* ---- tyres & driver aids ---- */
 .tyres { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
 .tyre-grid { display: grid; grid-template-columns: repeat(2, 44px); gap: 4px 18px; }
@@ -149,10 +188,11 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
 
 /* ---- team selector ---- */
 .timing .row.team { font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--team-accent, #9aa3b5); margin-top: -4px; }
-#menu-teams { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; max-width: 1100px; }
+/* the full 11-team grid: two rows of up to six compact cards */
+#menu-teams { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; max-width: 1240px; }
 .team-card {
-  width: 230px;
-  padding: 12px 14px;
+  width: 186px;
+  padding: 10px 12px;
   border: 2px solid transparent;
   border-top: 4px solid var(--c1);
   border-radius: 12px;
@@ -163,7 +203,8 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
   cursor: pointer;
   transition: transform 0.15s, border-color 0.15s, background 0.15s;
 }
-.team-card svg { width: 100%; height: 64px; display: block; margin-bottom: 6px; }
+.team-card svg { width: 100%; height: 50px; display: block; margin-bottom: 4px; }
+.team-card .team-name { font-size: 15px; }
 .team-card .team-swatches { display: flex; gap: 4px; margin-top: 6px; }
 .team-card .team-swatches i { width: 18px; height: 6px; border-radius: 3px; }
 .team-card.selected { border-color: var(--c1); border-top-color: var(--c1); background: rgba(32, 36, 48, 0.95); }
