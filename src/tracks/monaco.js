@@ -8,7 +8,6 @@
 // lap, projected to local metres (equirectangular at 43.7362) with the origin on the start
 // line, lightly smoothed and resampled (denser through corners).
 import elevation from './elevation/monaco.js';
-import city from './city/monaco.js';
 
 export default {
   id: 'monaco',
@@ -21,8 +20,9 @@ export default {
   geo: { lat: 43.7350233, lon: 7.4212666, projLat: 43.7362 },
   elevation, // m above sea level around the lap (real terrain, see the generated file)
   runoff: 2, // m between the kerbs and the walls: a street circuit
-  // buildings, coastline, old city walls and piers around the circuit (scripts/fetch-city.mjs)
-  city,
+  // buildings, coastline, old city walls and piers around the circuit (scripts/fetch-city.mjs):
+  // hundreds of kB, so only loaded with the circuit (Track.create)
+  loadCity: () => import('./city/monaco.js'),
   // lap metres [from, to] in tunnels (OSM tunnel / covered ways)
   tunnels: [[1400, 1862]],
   // red/white kerbs

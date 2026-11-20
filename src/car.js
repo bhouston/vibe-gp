@@ -10,10 +10,11 @@ import {
 } from './carGeometry.js';
 import { applyDecals } from './decals.js';
 import {
-  liveryMaterial, paintMaterial, carbonMaterial, tyreMaterial, rimMaterial, simpleMaterial, wheelCoverMaterial,
+  liveryMaterial, paintMaterial, carbonMaterial, tyreMaterial, rimMaterial, simpleMaterial, wheelCoverMaterial, tint,
 } from './materials.js';
-import { color, texture, uv, vec2, vec3, smoothstep, uniform } from 'three/tsl';
+import { color, texture, uv, vec2, vec3, smoothstep, uniform, positionGeometry } from 'three/tsl';
 import { DAMAGE } from './damage.js';
+import { SteeringWheel } from './wheel.js';
 
 /** Layer holding the mirror glass: the main camera must enable it, mirror cameras don't. */
 export const MIRROR_LAYER = 1;
@@ -117,12 +118,80 @@ export const DEFAULT_SHAPE = {
 };
 
 /** Car.update state for a car standing still at the origin, with no physics behind it. */
+/** Cockpit opening (an ellipse in x, z, cut through the chassis top) and its tub's floor. */
+const COCKPIT = { a: 0.2, b: 0.42, z: 0.1, rim: 0.7, floor: 0.42 };
+
 export const PARKED = { position: { x: 0, z: 0 }, height: 0, yaw: 0, steerAngle: 0, speed: 0, pitch: 0, roll: 0, heave: 0 };
 
+/**
+ * Materials that don't depend on the team, made once and shared by every car. three.js
+ * builds each material instance's shader on its own (on the CPU, at load), so 11 cars
+ * each with their own carbon, rims, brakes... would build the same shaders 11 times.
+ * `ai` ones are shared by the AI cars only (their tyres never change compound).
+ */
+const SHARED = new Set();
+let common = null;
+function commonMaterials() {
+  if (common) return common;
+  const light = new THREE.MeshStandardNodeMaterial();
+  light.colorNode = color(0x300000);
+  light.emissiveNode = color(0xff2a2a).mul(1.6);
+  // AI mirrors: never rendered, so plain dark glass instead of a render target each
+  const glass = new THREE.MeshStandardNodeMaterial({ color: 0x1a1d22, roughness: 0.15, metalness: 0.6 });
+  common = {
+    carbon: carbonMaterial(),
+    black: simpleMaterial(0x0b0b0c, 0.5),
+    visor: simpleMaterial(0x111111, 0.1, 0.6),
+    tub: Object.assign(simpleMaterial(0x16171a, 0.9), { side: THREE.DoubleSide }),
+    suit: simpleMaterial(0x1c1d22, 0.8),
+    rim: rimMaterial(),
+    brake: simpleMaterial(0x1a1a1c, 0.7, 0.2),
+    light,
+    glass,
+  };
+  for (const m of Object.values(common)) {
+    SHARED.add(m);
+    m.userData.flat = true; // doesn't depend on local position / normal (see mergeStatic)
+  }
+  return common;
+}
+/**
+ * One smoke-puff material for every puff of every car (one shader build, not one per
+ * puff the first time an engine smokes): each sprite's fade and shade are per-object
+ * uniforms, set from its userData when it is drawn.
+ */
+let smokeMat = null;
+function smokeMaterial() {
+  if (smokeMat) return smokeMat;
+  smokeMat = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false });
+  const alpha = uniform(0).onObjectUpdate(({ object }) => object.userData.puff.alpha.value);
+  const shade = uniform(0.3).onObjectUpdate(({ object }) => object.userData.puff.shade.value);
+  const d = uv().sub(0.5).length();
+  smokeMat.colorNode = vec3(shade, shade, shade.add(0.02));
+  smokeMat.opacityNode = alpha.mul(smoothstep(0.5, 0.1, d));
+  SHARED.add(smokeMat);
+  return smokeMat;
+}
+
+let aiTyres = null;
+const TYRE_COLORS = {}; // compound id -> THREE.Color, for the AI's per-tyre colour
+function aiTyreMaterials() {
+  if (!aiTyres) {
+    aiTyres = { front: tyreMaterial(CAR_DIMS.frontRadius, undefined, { perObject: true }), rear: tyreMaterial(CAR_DIMS.rearRadius, undefined, { perObject: true }) };
+    for (const m of Object.values(aiTyres)) SHARED.add(m);
+  }
+  return aiTyres;
+}
+
 export class Car {
-  /** @param team an entry from TEAMS (src/teams.js) */
-  constructor(team) {
+  /**
+   * @param team an entry from TEAMS (src/teams.js)
+   * @param ai an AI car: no working mirrors, and tyres shared with the other AI cars
+   */
+  constructor(team, { ai = false } = {}) {
     this.team = team;
+    this.ai = ai;
+    this.common = commonMaterials();
     this.shape = { ...DEFAULT_SHAPE, ...(team.shape ?? {}) };
     this.group = new THREE.Group(); // world transform (position + yaw)
     this.body = new THREE.Group(); // sprung mass (pitch/roll)
@@ -132,8 +201,7 @@ export class Car {
     this.debris = new THREE.Group();
     this.pieces = [];
 
-    const carbon = carbonMaterial();
-    const black = simpleMaterial(0x0b0b0c, 0.5);
+    const { carbon, black } = this.common;
     this.textures = [];
     // team paint with that part's sponsor decals layered on top
     const decorate = (node, part) => {
@@ -145,17 +213,34 @@ export class Car {
     };
     const livery = (part) => liveryMaterial(decorate(team.body(part), part), team.finish);
     // solid team paint; null means bare carbon
-    const paint = (hex, part) => (hex == null ? carbon : liveryMaterial(decorate(color(hex), part), team.finish));
+    // parts without sponsor decals share one material per colour (the wing elements are
+    // often all the same colour)
+    const plain = new Map();
+    const paint = (hex, part) => {
+      if (hex == null) return carbon;
+      if ((team.sponsors ?? []).some((s) => s.part === part)) return liveryMaterial(decorate(tint(hex), part), team.finish);
+      if (!plain.has(hex)) {
+        const m = liveryMaterial(tint(hex), team.finish);
+        m.userData.flat = true;
+        plain.set(hex, m);
+      }
+      return plain.get(hex);
+    };
     const W = team.wings;
     const wings = {
       frontMain: paint(W.frontMain, 'frontMain'), frontFlaps: paint(W.frontFlaps), frontTop: paint(W.frontTopFlap),
       frontEndplate: paint(W.frontEndplate, 'frontEndplate'), rearMain: paint(W.rearMain, 'rearMain'),
       rearFlap: paint(W.rearFlap, 'rearFlap'), rearEndplate: paint(W.rearEndplate, 'rearEndplate'),
     };
-    this.mirrorPaint = liveryMaterial(color(team.colors.mirror ?? 0x111111), team.finish);
+    this.mirrorPaint = liveryMaterial(tint(team.colors.mirror ?? 0x111111), team.finish);
     this.mirrorPaint.side = THREE.DoubleSide;
 
-    this.add(this.body, this.monocoque(), livery('monocoque'));
+    const tub = livery('monocoque');
+    // the cockpit opening is a real hole in the chassis top (the tub below is built in cockpit())
+    const p = positionGeometry;
+    tub.maskNode = p.x.div(COCKPIT.a).pow2().add(p.z.sub(COCKPIT.z).div(COCKPIT.b).pow2()).greaterThan(1)
+      .or(p.y.lessThan(COCKPIT.floor + 0.05));
+    this.add(this.body, this.monocoque(), tub);
     const sidepodMat = livery('sidepod');
     // index 0 = left (+x), 1 = right, like the damage model; each crumples on its own
     this.sidepods = [1, -1].map((side) => [this.add(this.body, this.sidepod(side), sidepodMat)]);
@@ -186,6 +271,85 @@ export class Car {
     this.spareWing = this.wingProp();
     this.oldWing = null;
     this.oldWingStop = -1;
+
+    if (ai) {
+      this.mergeStatic();
+      this.buildLod();
+    }
+  }
+
+  /**
+   * Level of detail for AI cars: past LOD_NEAR the small parts stop being drawn, past
+   * LOD_MID only the big shapes and the tyres, and past LOD_FAR (deep in the haze) nothing.
+   * Parts are dropped by their render layer, not `visible`, which the damage code owns.
+   */
+  buildLod() {
+    this.lodLevel = 0;
+    this.lodMeshes = [];
+    this.group.updateMatrixWorld(true);
+    const s = new THREE.Vector3();
+    this.group.traverse((o) => {
+      if (!o.isMesh) return;
+      o.geometry.computeBoundingSphere();
+      o.getWorldScale(s);
+      const r = o.geometry.boundingSphere.radius * Math.max(s.x, s.y, s.z);
+      const tyre = this.tyreMats.includes(o.material);
+      // the furthest level at which this mesh is still drawn
+      this.lodMeshes.push({ o, upTo: tyre || r >= 0.4 ? 2 : r >= 0.2 ? 1 : 0 });
+    });
+  }
+
+  /** Pick the AI car's level of detail for a camera `dist` metres away. */
+  setLod(dist) {
+    const level = dist < LOD_NEAR ? 0 : dist < LOD_MID ? 1 : dist < LOD_FAR ? 2 : 3;
+    if (level === this.lodLevel) return;
+    this.lodLevel = level;
+    for (const { o, upTo } of this.lodMeshes) {
+      if (level <= upTo) o.layers.enable(0);
+      else o.layers.disable(0);
+    }
+  }
+
+  /**
+   * Fewer draw calls for AI cars: the meshes fixed to the body (everything but the parts
+   * that move, bend or break off) are merged into one mesh per material. A car is ~95
+   * meshes; with ten AI cars that's ~1000 draws in each of the main, shadow and mirror
+   * passes. A mesh's transform is baked into its geometry only when its material doesn't
+   * depend on local position or normal (livery patterns and decals do).
+   */
+  mergeStatic() {
+    // anything the damage / pit crew code holds on to stays a mesh of its own
+    const keep = new Set();
+    const walk = (v, depth) => {
+      if (!v || typeof v !== 'object' || depth > 3) return;
+      if (v.isObject3D) return void keep.add(v);
+      if (Array.isArray(v)) return v.forEach((x) => walk(x, depth + 1));
+      if (Object.getPrototypeOf(v) === Object.prototype) for (const x of Object.values(v)) walk(x, depth + 1);
+    };
+    for (const [k, v] of Object.entries(this)) if (k !== 'group' && k !== 'body' && k !== 'debris') walk(v, 0);
+    const byMat = new Map();
+    for (const m of [...this.body.children]) {
+      if (!m.isMesh || keep.has(m)) continue;
+      const g = m.geometry;
+      if (!g.index || Object.keys(g.attributes).sort().join() !== 'normal,position,uv') continue;
+      m.updateMatrix();
+      const identity = m.matrix.equals(IDENTITY);
+      if (!identity && !m.material.userData.flat) continue;
+      if (!byMat.has(m.material)) byMat.set(m.material, []);
+      byMat.get(m.material).push(m);
+    }
+    for (const [mat, list] of byMat) {
+      if (list.length < 2) continue;
+      const geos = list.map((m) => (m.matrix.equals(IDENTITY) ? m.geometry : m.geometry.clone().applyMatrix4(m.matrix)));
+      const merged = new THREE.Mesh(mergeGeometries(geos), mat);
+      merged.castShadow = merged.receiveShadow = true;
+      for (const [k, m] of list.entries()) {
+        this.body.remove(m);
+        if (geos[k] !== m.geometry) geos[k].dispose();
+        m.geometry.dispose();
+      }
+      this.body.add(merged);
+    }
   }
 
   add(parent, geo, mat, pos, rot) {
@@ -391,14 +555,12 @@ export class Car {
     this.smoke = [];
     this.smokeNext = 0;
     this.smokeAcc = 0;
+    const mat = smokeMaterial();
     for (let k = 0; k < SMOKE.count; k++) {
-      const mat = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false });
-      const alpha = uniform(0);
-      const shade = uniform(0.3);
-      const d = uv().sub(0.5).length();
-      mat.colorNode = vec3(shade, shade, shade.add(0.02));
-      mat.opacityNode = alpha.mul(smoothstep(0.5, 0.1, d));
+      // each puff's fade and shade, read by the shared material when that sprite is drawn
+      const alpha = { value: 0 }, shade = { value: 0.3 };
       const sprite = new THREE.Sprite(mat);
+      sprite.userData.puff = { alpha, shade };
       sprite.visible = false;
       sprite.castShadow = false;
       this.debris.add(sprite);
@@ -482,6 +644,7 @@ export class Car {
     this.group.updateMatrixWorld(true);
     const piece = part.clone();
     piece.visible = true;
+    piece.traverse((o) => o.layers.enable(0)); // the part may be hidden by the LOD (setLod)
     part.matrixWorld.decompose(piece.position, piece.quaternion, piece.scale);
     this.debris.add(piece);
     // carried along by the car's speed, thrown outwards and up, tumbling
@@ -564,28 +727,38 @@ export class Car {
     this.add(b, this.wingElement(bx, () => ({ z: -2.44, y: 0.33, chord: 0.15, thick: 0.02, angle: 0.2 })), carbon);
     this.add(b, this.wingElement(bx, () => ({ z: -2.56, y: 0.41, chord: 0.11, thick: 0.016, angle: 0.5 })), carbon);
     // FIA rain light on the crash structure
-    const light = new THREE.MeshStandardNodeMaterial();
-    light.colorNode = color(0x300000);
-    light.emissiveNode = color(0xff2a2a).mul(1.6);
-    this.add(b, boxGeometry(0.09, 0.045, 0.02), light, [0, 0.31, -2.51]);
+    this.add(b, boxGeometry(0.09, 0.045, 0.02), this.common.light, [0, 0.31, -2.51]);
   }
 
   cockpit(black, carbon, helmetMat, tcamMat) {
     const b = this.body;
-    // cockpit opening: dark tub with a carbon rim around it
-    const opening = Array.from({ length: 24 }, (_, i) => {
-      const a = (i / 24) * Math.PI * 2;
-      return [Math.cos(a) * 0.2, 0.1 + Math.sin(a) * 0.42];
+    const C = COCKPIT;
+    // cockpit opening: a hole in the chassis top (see the monocoque's mask) with a tub
+    // below it: padded walls and a floor, and a carbon rim around the edge
+    const opening = Array.from({ length: 32 }, (_, i) => {
+      const a = (i / 32) * Math.PI * 2;
+      return [Math.cos(a) * C.a, C.z + Math.sin(a) * C.b];
     });
-    this.add(b, plateGeometry(opening, 0.012, 'y', 0.696), black);
-    const rim = opening.map(([x, z]) => [x * 1.04, 0.7, z * 1.02 + 0.002]);
+    const walls = ringLoft([C.rim + 0.01, C.floor].map((y) => opening.map(([x, z]) => [x, y, z])), { caps: false });
+    this.add(b, walls, this.common.tub);
+    this.add(b, plateGeometry(opening, 0.01, 'y', C.floor), this.common.tub);
+    const rim = opening.map(([x, z]) => [x * 1.04, C.rim, (z - C.z) * 1.02 + C.z]);
     this.add(b, tubeGeometry([...rim, rim[0]], 0.016, 6), carbon);
     // T-cam on top of the airbox (yellow / black identifies the driver)
     this.add(b, boxGeometry(0.11, 0.03, 0.07), tcamMat, [0, 1.07, -0.33]);
     // driver helmet
     const helmet = sphereGeometry(0.13, 20, 14, [1, 1.05, 1.15]);
-    this.add(b, helmet, helmetMat, [0, 0.76, -0.02]);
-    this.add(b, boxGeometry(0.2, 0.06, 0.04), simpleMaterial(0x111111, 0.1, 0.6), [0, 0.78, 0.12]);
+    // hidden in the driver view, whose eye is inside it (see setDriverView), with the
+    // driver's shoulders in the tub below
+    this.helmet = [
+      this.add(b, helmet, helmetMat, [0, 0.76, -0.02]),
+      this.add(b, boxGeometry(0.2, 0.06, 0.04), this.common.visor, [0, 0.78, 0.12]),
+      this.add(b, sphereGeometry(0.16, 16, 10, [1.15, 0.75, 0.8]), this.common.suit, [0, 0.58, -0.1]),
+    ];
+    // the player's steering wheel, with shift lights and a dash display (AI cars get one
+    // when someone watches from their driver view: see ensureWheel)
+    this.carbon = carbon;
+    if (!this.ai) this.ensureWheel();
     this.buildMirrors(carbon);
   }
 
@@ -612,7 +785,22 @@ export class Car {
       )), { caps: false });
       this.add(b, housing, this.mirrorPaint);
 
+      if (this.ai) {
+        // never rendered: dark glass, no render target or camera
+        const glass = new THREE.Mesh(quadGeometry(M.w, M.h), this.common.glass);
+        glass.position.set(x, y, z - 0.0005);
+        glass.rotation.y = Math.PI;
+        b.add(glass);
+        this.mirrors.push({ target: null, camera: null, glass, group: b, broken: false });
+        continue;
+      }
       const target = new THREE.RenderTarget(M.res[0], M.res[1], { type: THREE.HalfFloatType, samples: 4 });
+      // the same linear colour space as the main frame buffer. three.js shares render
+      // objects between targets of the same format, so with the default (none) every mesh
+      // seen in both the view and a mirror flipped colour space twice a frame and rebuilt
+      // its GPU pipeline each time (~60 pipelines a frame). Sampling it is unchanged: linear
+      // is the working colour space.
+      target.texture.colorSpace = THREE.LinearSRGBColorSpace;
       const glassMat = new THREE.MeshBasicNodeMaterial({ fog: false });
       // glass faces the driver (-Z): flip u so the image reads as a reflection.
       // three stores render targets top-row-first on every backend, hence the flipped v.
@@ -640,12 +828,16 @@ export class Car {
 
   /** Re-render the image in each mirror. Call after the main render each frame. */
   renderMirrors(renderer, scene) {
+    // one mirror per frame, taking turns: each still refreshes at half the frame rate, and
+    // every mirror pass draws the whole scene again (with a full grid, the two of them were
+    // most of the frame's draw calls)
+    this.mirrorTurn = ((this.mirrorTurn ?? 0) + 1) % this.mirrors.length;
+    let m = this.mirrors[this.mirrorTurn];
+    if (m.broken || !m.target) m = this.mirrors.find((o) => !o.broken && o.target); // the other one
+    if (!m) return; // knocked off (or an AI car's): nothing to show
     const prev = renderer.getRenderTarget();
-    for (const m of this.mirrors) {
-      if (m.broken) continue; // knocked off: nothing to show
-      renderer.setRenderTarget(m.target);
-      renderer.render(scene, m.camera);
-    }
+    renderer.setRenderTarget(m.target);
+    renderer.render(scene, m.camera);
     renderer.setRenderTarget(prev);
   }
 
@@ -656,7 +848,9 @@ export class Car {
       [0, y + 0.03, 0.32], [0.2, y + 0.02, 0.22], [0.3, y, -0.02], [0.32, 0.78, -0.25], [0.3, 0.6, -0.4],
     ];
     const hoop = tubeGeometry(loop, 0.028, 10);
-    const pillar = tubeGeometry([[0, y + 0.03, 0.32], [0, 0.78, 0.48], [0, 0.6, 0.6]], 0.026, 10);
+    // the centre pillar is slim and blends into the hoop, as on the real titanium halo:
+    // from the driver's seat it's a thin line down the middle of the view
+    const pillar = tubeGeometry([[0, y + 0.025, 0.31], [0, 0.8, 0.46], [0, 0.6, 0.6]], 0.013, 10);
     return mergeGeometries([hoop, pillar]);
   }
 
@@ -664,11 +858,12 @@ export class Car {
     const d = CAR_DIMS;
     // one tyre material per axle: the sidewall lettering is laid out relative to the radius
     // (the sidewall lettering texture is shared by every tyre, so it is not disposed with the car)
-    const tyreMats = { front: tyreMaterial(d.frontRadius), rear: tyreMaterial(d.rearRadius) };
+    const tyreMats = this.ai ? aiTyreMaterials() : { front: tyreMaterial(d.frontRadius), rear: tyreMaterial(d.rearRadius) };
     this.tyreMats = Object.values(tyreMats);
+    this.tyreMeshes = [];
     this.compound = null;
-    const rimMat = rimMaterial();
-    const brakeMat = simpleMaterial(0x1a1a1c, 0.7, 0.2);
+    const rimMat = this.common.rim;
+    const brakeMat = this.common.brake;
     const corners = [
       { x: d.track, z: d.frontAxle, r: d.frontRadius, w: d.frontWidth, front: true },
       { x: -d.track, z: d.frontAxle, r: d.frontRadius, w: d.frontWidth, front: true },
@@ -681,7 +876,9 @@ export class Car {
       this.group.add(steer); // unsprung: wheels don't pitch/roll with the body
       const spin = new THREE.Group();
       steer.add(spin);
-      spin.add(new THREE.Mesh(tyreGeometry(c.r, c.w, 0.63, 96), c.front ? tyreMats.front : tyreMats.rear));
+      const tyre = new THREE.Mesh(tyreGeometry(c.r, c.w, 0.63, 96), c.front ? tyreMats.front : tyreMats.rear);
+      this.tyreMeshes.push(tyre);
+      spin.add(tyre);
       // 18" rim: barrel just inside the tyre bead, flat aero cover on the outer face,
       // brake assembly visible on the inner face
       const sx = Math.sign(c.x);
@@ -718,6 +915,26 @@ export class Car {
     }
   }
 
+  /**
+   * Driver view on / off: hides the helmet the eye sits in. While it's on, `dash` (the
+   * physics state, race info { position, cars, lap, laps } and dt) redraws the wheel's
+   * display.
+   */
+  /** Fit the steering wheel (built on first use for an AI car being watched from the cockpit). */
+  ensureWheel() {
+    if (this.wheel) return;
+    this.wheel = new SteeringWheel(this.carbon);
+    this.body.add(this.wheel.group);
+  }
+
+  setDriverView(on, dash) {
+    if (this.driverView !== on) {
+      this.driverView = on;
+      for (const m of this.helmet) m.visible = !on;
+    }
+    if (on && dash && this.wheel) this.wheel.update(dash.car, dash.info, dash.dt);
+  }
+
   /** Free GPU resources (call after removing the car from the scene). */
   dispose() {
     this.clearDebris();
@@ -728,18 +945,20 @@ export class Car {
         mats.add(o.material);
       }
     });
-    for (const m of mats) m.dispose();
-    for (const m of this.mirrors) m.target.dispose();
-    for (const p of this.smoke) p.sprite.material.dispose();
+    for (const m of mats) if (!SHARED.has(m)) m.dispose(); // shared ones outlive any one car
+    for (const m of this.mirrors) m.target?.dispose();
     this.smokeGeo?.dispose();
     for (const t of this.textures) t.dispose();
+    this.wheel?.dispose();
   }
 
   /** Sidewall colours for the compound fitted (an entry of COMPOUNDS). */
   setCompound(compound) {
     if (compound === this.compound) return;
     this.compound = compound;
-    for (const m of this.tyreMats) m.userData.compound.value.setHex(compound.hex);
+    // AI cars share their tyre materials: the colour goes on each tyre instead
+    if (this.ai) for (const t of this.tyreMeshes) t.userData.tyreColor = (TYRE_COLORS[compound.id] ??= new THREE.Color(compound.hex));
+    else for (const m of this.tyreMats) m.userData.compound.value.setHex(compound.hex);
   }
 
   /** Show or hide wheel i (0 FL, 1 FR, 2 RL, 3 RR): off the car mid pit stop. */
@@ -762,12 +981,16 @@ export class Car {
       w.steer.position.y = w.radius - w.drop;
       w.spin.rotation.x += (state.speed / w.radius) * dt;
     }
+    this.wheel?.steer(state.steerAngle);
     // body pitch under accel/brake, roll in corners (smoothed in physics)
     this.body.rotation.x = state.pitch;
     this.body.rotation.z = state.roll;
     this.body.position.y = state.heave;
   }
 }
+
+const IDENTITY = new THREE.Matrix4();
+const LOD_NEAR = 60, LOD_MID = 150, LOD_FAR = 1200; // m from the camera (AI cars, see setLod)
 
 /** Minimal indexed geometry merge (position/normal/uv). */
 function mergeGeometries(geos) {

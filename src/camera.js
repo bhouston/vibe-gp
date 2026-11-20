@@ -68,12 +68,13 @@ export class CameraRig {
         break;
       }
       case 'driver': {
-        // helmet cam: just ahead of the visor, pitching/rolling with the chassis,
-        // with the halo above and both mirrors at the edges of the view
+        // helmet cam: at the driver's eyes (the helmet is hidden), pitching/rolling with
+        // the chassis, looking over the steering wheel, with the halo above, its slim
+        // centre pillar ahead and both mirrors at the edges of the view
         const body = visual.body;
         body.updateWorldMatrix(true, false);
-        targetPos = body.localToWorld(new THREE.Vector3(0, 0.78, 0.15));
-        targetLook = body.localToWorld(new THREE.Vector3(0, 0.74, 20));
+        targetPos = body.localToWorld(new THREE.Vector3(0, 0.84, 0.0));
+        targetLook = body.localToWorld(new THREE.Vector3(0, -0.5, 20)); // ~4 degrees down
         stiffness = 1000;
         break;
       }

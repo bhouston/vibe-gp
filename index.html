@@ -64,6 +64,7 @@
       <div class="panel timing">
         <div class="row track"><span id="track-name"></span></div>
         <div class="row team"><span id="team-name"></span></div>
+        <div class="row pos" id="pos-row" hidden><span class="label">POS</span><span id="pos">-</span></div>
         <div class="row"><span class="label">LAP</span><span id="lap">OUT</span></div>
         <div class="row big"><span class="label">TIME</span><span id="current">--:--.---</span></div>
         <div class="row"><span class="label">LAST</span><span id="last">--:--.---</span></div>
@@ -101,6 +102,14 @@
 
       <div class="panel map"><svg id="minimap"></svg></div>
 
+      <div id="director" class="director" hidden></div>
+      <div id="director-label" hidden></div>
+      <div id="monitor" class="monitor" hidden><div class="monitor-view"></div><div class="monitor-caption"></div></div>
+      <div id="standings" class="panel standings" hidden>
+        <div class="head"><span id="standings-title">RACE</span><span id="standings-laps"></span></div>
+        <ol id="standings-list"></ol>
+      </div>
+
       <div id="flash"></div>
       <div id="surface"></div>
 
@@ -119,7 +128,10 @@
           <div><b>A D / ← →</b> steer</div>
           <div><b>1 2 3</b> tyres for the next pit stop: soft / medium / hard</div>
           <div><b>F</b> change the front wing at the next pit stop</div>
-          <div><b>C</b> camera (<span id="cam">CHASE</span>) &nbsp; <b>R</b> reset &nbsp; <b>Esc</b> tracks</div>
+          <div><b>C</b> camera (<span id="cam">CHASE</span>) &nbsp; <b>V</b> free cam &nbsp; <b>R</b> restart &nbsp; <b>Esc / P</b> pause</div>
+          <div>In free cam, click a car in the timing tower to watch it: <b>C</b> views &nbsp; <b>[ ]</b> next car &nbsp; <b>G</b> take / hand back the wheel</div>
+          <div>In free cam, crashes and spins pop up in a monitor and replay: <b>B</b> replay the last one, click it to watch that car</div>
+          <div><b>M</b> director mode: every car's onboard view and the highlights, click one to put that car in the main view</div>
           <div class="dim">Renderer: <span id="backend">…</span></div>
         </div>
       </div>
@@ -157,7 +169,7 @@
           <button id="btn-back" class="menu-btn">← Back</button>
           <button id="btn-go" class="menu-btn primary go">GO</button>
         </div>
-        <p class="hint">Arrow keys to choose · Enter to race · Backspace to go back · Esc in-game to come back here</p>
+        <p class="hint">Arrow keys to choose · Enter to race · Backspace to go back · Esc in-game pauses (Change car or circuit comes back here)</p>
       </section>
     </div>
 

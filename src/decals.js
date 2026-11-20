@@ -8,6 +8,7 @@ import {
   mix, smoothstep, positionLocal, normalLocal, texture, vec2, abs, sign, float, pow, max,
 } from 'three/tsl';
 import { drawLogo } from './logos.js';
+import { MOBILE } from './quality.js';
 
 const FONTS = {
   sans: '800 {px}px "Segoe UI", "Helvetica Neue", Arial, sans-serif',
@@ -16,8 +17,18 @@ const FONTS = {
   serif: '700 {px}px Georgia, "Times New Roman", serif',
 };
 
-const PX_PER_M = 4200; // atlas resolution on the car (~0.24 mm per texel)
-const MAX_W = 4096;
+// Atlas resolution on the car. 1500 px/m (~0.7 mm a texel) is still sharper than the screen
+// in the menu's close-up of the car; it was 4200, which put ~600 MB of decal textures on the
+// GPU with a full grid (each atlas row is a whole decal, so memory goes with its square).
+// The car studio (studio.js) asks for more with setDecalResolution for its close-up shots.
+let PX_PER_M = MOBILE ? 1000 : 1500;
+let MAX_W = 2048;
+
+/** Pixels per metre for decals built from now on (the car studio's close-ups use more). */
+export function setDecalResolution(pxPerM, maxW = 4096) {
+  PX_PER_M = pxPerM;
+  MAX_W = maxW;
+}
 const PAD = 24; // transparent gutter between atlas rows, so mip levels don't bleed
 
 const hexCss = (hex) => `#${hex.toString(16).padStart(6, '0')}`;
