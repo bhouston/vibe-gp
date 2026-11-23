@@ -26,7 +26,7 @@
 // (toe-out pulls the car, camber costs grip); damaged tyres grip less and drag.
 import { CAR_DIMS } from './car.js';
 import { KERB_WIDTH, WALL_THICKNESS, PIT } from './trackPath.js';
-import { SURFACES, TYRE, COMPOUNDS, tyreForce, tempGrip, peakForce } from './tyres.js';
+import { SURFACES, TYRE, COMPOUNDS, tyreForce, tempGrip, wearGrip, peakForce, rollingCoef } from './tyres.js';
 import { CarDamage, DAMAGE } from './damage.js';
 
 const G = 9.81;
@@ -175,6 +175,7 @@ export class CarPhysics {
       dist: 0, // rolled distance, drives the kerb-ridge phase
     }));
     this.compound ??= COMPOUNDS.medium; // a reset keeps the compound, on a fresh set
+    this.wearScale ??= 1; // tyre wear rate multiplier (a race sets it from the race distance)
     this.damage ??= new CarDamage();
     this.damage.reset(); // a reset is a fresh car
     this.damageOn ??= true; // tools (track-check's autopilot) can turn damage off
@@ -205,6 +206,9 @@ export class CarPhysics {
     // input.hold: up on the jacks in the pit box. The car stays put and the pedals do
     // nothing (the brake would otherwise select reverse at a standstill).
     const yaw0 = this.yaw;
+    // input.parked: a retired car, abandoned with the brakes on. It sits still but a hit can
+    // shove it, the locked tyres scrubbing it to a stop (the brake doesn't select reverse)
+    this.parked = !!input.parked;
     if (input.hold) {
       this.holdStill();
       input = { ...input, throttle: 0, brake: 0 };
@@ -268,6 +272,19 @@ export class CarPhysics {
     this.pitch += (clamp(-this.longAccel * 0.0012, -0.035, 0.035) - this.pitch) * kf;
     this.roll += (clamp(this.latAccel * 0.0012, -0.04, 0.04) - this.roll) * kf;
     this.heave = bump * Math.min(absV / 20, 1);
+    // parked and all but stopped: static friction holds it, even on a steep slope
+    if (this.parked && Math.hypot(this.vel.x, this.vel.z) < 0.3 && Math.abs(this.yawRate) < 0.15) {
+      this.vel.x = this.vel.z = 0;
+      this.yawRate = 0;
+      this.speed = 0;
+      if (this.still) {
+        // it didn't move last step either: undo the slope's nudge within this one
+        this.position.x = this.prevPos.x;
+        this.position.z = this.prevPos.z;
+        this.yaw = yaw0;
+      }
+      this.still = true;
+    } else this.still = false;
     if (input.hold) {
       this.holdStill();
       this.position.x = this.prevPos.x;
@@ -336,7 +353,7 @@ export class CarPhysics {
       w.damage = dmg.tyre[i];
       w.susp = dmg.suspension[i];
       w.toe = Math.sign(w.y) * DAMAGE.suspToe * w.susp; // bent arm: the wheel toes out
-      w.grip = c.grip * tempGrip(w.temp, c.tOpt) * (1 - TYRE.dirtGripLoss * w.dirt) * (1 - TYRE.wearGripLoss * w.wear)
+      w.grip = c.grip * tempGrip(w.temp, c.tOpt) * (1 - TYRE.dirtGripLoss * w.dirt) * wearGrip(w.wear)
         * (1 - DAMAGE.tyreGripLoss * w.damage) * (1 - DAMAGE.suspGripLoss * w.susp) * (w.front ? 1 : P.rearGrip);
       const peak = peakForce(S, fz) * w.grip;
       const used = peak > 0 ? Math.min(1, Math.abs(w.fy || 0) / peak) : 1;
@@ -356,7 +373,7 @@ export class CarPhysics {
         if (this.tc) axleTorque = Math.min(axleTorque, (W[2].capX + W[3].capX) * D.rearRadius) * this.tcGain;
       } else brakeForce = Math.max(brakeForce, P.maxBrakeForce * 0.5 * this.throttle); // throttle while rolling back = brake
     } else if (wRear > 1) axleTorque = -P.engineBrake;
-    if (this.brake > 0 && vx <= 0.5 && this.throttle === 0) {
+    if (this.brake > 0 && vx <= 0.5 && this.throttle === 0 && !this.parked) {
       brakeForce = 0; // stopped: the brake key selects reverse
       if (vx > -P.reverseMax) axleTorque = -P.reverseTorque * this.brake;
     }
@@ -402,7 +419,7 @@ export class CarPhysics {
       const eps = 1e-3;
       const f1 = tyreForce(S, kap0 + eps, tanA, fz, grip).fx;
       const dFdOmega = Math.max(0, (f1 - f0) / eps) * (w.r / den);
-      const crr = S.crr + DAMAGE.tyreCrr * w.damage + DAMAGE.suspCrr * w.susp;
+      const crr = rollingCoef(S, wvx) + DAMAGE.tyreCrr * w.damage + DAMAGE.suspCrr * w.susp;
       const rollT = crr * fz * w.r * Math.tanh(w.omega * w.r / 0.5);
       const Ieff = I + h * w.r * w.r * dFdOmega;
       let om = w.omega + (h * (tDrive - f0 * w.r - rollT)) / Ieff;
@@ -548,12 +565,12 @@ export class CarPhysics {
       const heat = TYRE.slipHeat * (w.slipPower || 0) + TYRE.flexHeat * w.load * (w.rollSpeed || 0);
       let cool = (TYRE.coolBase + TYRE.coolSpeed * v) * (w.temp - TYRE.tAmbient);
       if (w.surface === SURFACES.grass || w.surface === SURFACES.gravel) cool += TYRE.coolGrass * (w.temp - TYRE.tAmbient);
-      w.temp += ((heat - cool) / TYRE.heatCapacity) * dt;
+      w.temp += ((heat - cool) / (TYRE.heatCapacity * (1 - TYRE.wornHeat * w.wear))) * dt;
       const d = (w.rollSpeed || 0) * dt;
       if (w.surface.dirt > 0) w.dirt += (1 - w.dirt) * Math.min(1, w.surface.dirt * d);
       else w.dirt *= Math.exp(-d / TYRE.dirtCleanLength);
       const scrub = 1 + TYRE.wearSlide * Math.max(0, w.slide - 0.8);
-      w.wear = Math.min(1, w.wear + (d / 1000) * this.compound.wear * scrub);
+      w.wear = Math.min(1, w.wear + (d / 1000) * this.compound.wear * this.wearScale * scrub);
     }
   }
 

@@ -1,5 +1,6 @@
 // Shared livery helpers for the team definitions in src/teams/*.js (see src/teams.js).
 import { color, float, mix, smoothstep, positionLocal, uv, sin, abs, max } from 'three/tsl';
+import { tint } from '../materials.js';
 
 // ---- small mask helpers (all return 0..1 float nodes) ----
 export const SOFT = 0.006;
@@ -15,8 +16,8 @@ export const around = () => sin(uv().x.mul(Math.PI * 2));
 
 /** Layer colours over a base: layers = [[hex, mask], ...], later layers win. */
 export function paint(baseHex, layers) {
-  let c = color(baseHex);
-  for (const [hex, mask] of layers) c = mix(c, color(hex), mask.clamp(0, 1));
+  let c = tint(baseHex);
+  for (const [hex, mask] of layers) c = mix(c, tint(hex), mask.clamp(0, 1));
   return c;
 }
 

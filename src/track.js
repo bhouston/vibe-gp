@@ -68,7 +68,10 @@ export class Track {
    */
   static async create(def, onProgress = () => {}) {
     onProgress(0, 'Loading map data');
-    if (def.loadLandOsm) def = { ...def, landOsm: (await def.loadLandOsm()).default };
+    // the circuit's surroundings and (street circuits) its city, fetched together
+    const [osm, city] = await Promise.all([def.loadLandOsm?.(), def.loadCity?.()]);
+    if (osm) def = { ...def, landOsm: osm.default };
+    if (city) def = { ...def, city: city.default };
     const t = new Track(def, { deferred: true });
     t.timings = []; // ms spent in each step (handy when a circuit loads slowly)
     let prev = null, t0 = performance.now();

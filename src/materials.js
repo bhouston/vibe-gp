@@ -9,6 +9,14 @@ import {
 import { landSample } from './land.js';
 
 /**
+ * A colour (or number) as a uniform rather than a constant. A constant is written into the
+ * shader code, so materials that differ only in colour each compile their own shader; with
+ * uniforms, every car's wings, halo, mirrors etc. share one (11 cars on the grid).
+ */
+export const tint = (hex) => uniform(new THREE.Color(hex));
+export const ufloat = (x) => uniform(x);
+
+/**
  * Tileable noise in a texture (256 x 256, repeating): r and g = 3-octave fractal noise with
  * 4 base periods per tile, b = smooth noise with 16 periods, a = smooth noise with 32.
  * All in 0..1. Sampling it is far cheaper to compile and run than procedural noise (the
@@ -328,13 +336,7 @@ export function checkerMaterial(cols, rows) {
 
 /** Glossy car paint with clearcoat. */
 export function paintMaterial(hex) {
-  const m = new THREE.MeshPhysicalNodeMaterial();
-  m.colorNode = color(hex);
-  m.roughnessNode = float(0.32);
-  m.metalnessNode = float(0.15);
-  m.clearcoatNode = float(1.0);
-  m.clearcoatRoughnessNode = float(0.06);
-  return m;
+  return liveryMaterial(tint(hex));
 }
 
 /**
@@ -344,9 +346,10 @@ export function paintMaterial(hex) {
 export function liveryMaterial(colorNode, finish = {}) {
   const m = new THREE.MeshPhysicalNodeMaterial();
   m.colorNode = colorNode;
-  m.roughnessNode = float(finish.roughness ?? 0.32);
-  m.metalnessNode = float(finish.metalness ?? 0.15);
-  m.clearcoatNode = float(finish.clearcoat ?? 1.0);
+  // uniforms, not constants: teams' finishes differ but their shaders can be shared
+  m.roughnessNode = ufloat(finish.roughness ?? 0.32);
+  m.metalnessNode = ufloat(finish.metalness ?? 0.15);
+  m.clearcoatNode = ufloat(finish.clearcoat ?? 1.0);
   m.clearcoatRoughnessNode = float(0.06);
   return m;
 }
@@ -362,7 +365,7 @@ export function wheelCoverMaterial(baseHex, ringHex) {
   const ring = smoothstep(0.76, 0.78, r).mul(smoothstep(0.88, 0.86, r));
   const mark = smoothstep(0.03, 0.02, abs(d.y)).mul(smoothstep(0.3, 0.32, r)).mul(smoothstep(0.62, 0.6, r)).mul(step(0.0, d.x));
   const hub = smoothstep(0.2, 0.18, r);
-  let c = mix(color(baseHex), color(ringHex), ring.add(mark).clamp(0, 1));
+  let c = mix(tint(baseHex), tint(ringHex), ring.add(mark).clamp(0, 1));
   c = mix(c, color(0x0c0c0e), hub);
   m.colorNode = c;
   m.roughnessNode = float(0.35);
@@ -415,10 +418,13 @@ function sidewallTexture() {
  * The compound colour is a uniform (m.userData.compound) so a tyre change needs no new
  * shader; the pattern uses the raw geometry so it also works on instanced tyres.
  */
-export function tyreMaterial(radius, compoundHex = 0xd8261c) {
+export function tyreMaterial(radius, compoundHex = 0xd8261c, { perObject = false } = {}) {
   const m = new THREE.MeshStandardNodeMaterial();
   const p = positionGeometry;
   const compound = uniform(new THREE.Color(compoundHex));
+  // shared by many cars (the AI's): each tyre mesh carries its own colour in
+  // userData.tyreColor, so one shader serves every compound
+  if (perObject) compound.onObjectUpdate(({ object }) => object.userData.tyreColor ?? compound.value);
   const rr = length(p.yz).div(radius); // 0.63 at the bead, 1 on the tread
   const side = smoothstep(0.55, 0.75, abs(normalGeometry.x)); // sidewall faces only
   const ring = smoothstep(0.715, 0.725, rr).mul(smoothstep(0.765, 0.755, rr)).mul(side);

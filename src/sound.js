@@ -1,8 +1,8 @@
 // Game audio. Everything is synthesised with the Web Audio API: there are no sample files.
 //
 //   master -> limiter -> speakers
-//     music   the looping track from music.js (on / off in Settings)
-//     sfx     (on / off in Settings; silent behind the menu)
+//     music   the looping track from music.js (on / off and volume in Settings)
+//     sfx     (on / off and volume in Settings; silent behind the menu)
 //       car   engine, tyres, impacts: quieter and duller the further the camera is
 //       wind  on-board only: there is no rushing air at a trackside camera
 //
@@ -163,6 +163,8 @@ export class Sound {
     this.ctx = null;
     this.musicOn = true;
     this.sfxOn = true;
+    this.musicVol = 1; // gains from the Settings sliders (setMusicVolume / setSfxVolume)
+    this.sfxVol = 1;
     this.sandy = false; // the circuit's "grass" is really sand (desert and dune circuits)
     this.musicStarted = false;
     this.gear = 1;
@@ -440,13 +442,24 @@ export class Sound {
   setMusic(on) {
     this.musicOn = on;
     if (!this.ctx) return;
-    this.glide(this.musicBus.gain, on ? 0.5 : 0, 0.25);
+    this.glide(this.musicBus.gain, on ? 0.5 * this.musicVol : 0, 0.25);
     if (on && !this.musicStarted) this.startMusic();
   }
 
   setSfx(on) {
     this.sfxOn = on;
-    if (this.ctx) this.glide(this.sfx.gain, on ? 1 : 0, 0.08);
+    if (this.ctx) this.glide(this.sfx.gain, on ? this.sfxVol : 0, 0.08);
+  }
+
+  /** Settings slider, 0..100. Squared, so the slider's middle sounds about half as loud. */
+  setMusicVolume(percent) {
+    this.musicVol = (percent / 100) ** 2;
+    if (this.ctx && this.musicOn) this.glide(this.musicBus.gain, 0.5 * this.musicVol, 0.1);
+  }
+
+  setSfxVolume(percent) {
+    this.sfxVol = (percent / 100) ** 2;
+    if (this.ctx && this.sfxOn) this.glide(this.sfx.gain, this.sfxVol, 0.05);
   }
 
   async startMusic() {
@@ -479,7 +492,7 @@ export class Sound {
     car.impact = car.scrape = 0;
     if (!this.ctx || this.ctx.state !== 'running') return;
 
-    if (this.musicOn) this.glide(this.musicBus.gain, racing ? 0.3 : 0.55, 0.4);
+    if (this.musicOn) this.glide(this.musicBus.gain, (racing ? 0.3 : 0.55) * this.musicVol, 0.4);
     const air = Math.hypot(car.vel.x, car.vel.z);
     const doppler = this.updateView(car, air, camera, mode, racing);
     this.updateEngine(car, doppler, racing);

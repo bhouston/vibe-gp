@@ -9,6 +9,9 @@ import * as THREE from 'three/webgpu';
 import { Car, MIRROR_LAYER, PARKED } from './car.js';
 import { TEAMS, teamById } from './teams.js';
 import { skyNode } from './materials.js';
+import { setDecalResolution } from './decals.js';
+
+setDecalResolution(4200); // close-ups for comparing against photos: the logos at full sharpness
 
 const SUN_DIR = [0.45, 0.8, 0.35];
 // camera position (car frame: +Z forward, +X left) and target, per view

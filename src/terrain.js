@@ -105,14 +105,17 @@ export class TerrainField {
     let rMax = 0;
     for (const p of refs) {
       rMax = Math.max(rMax, p.r);
+      p.rb2 = (p.r + BLEND) ** 2; // beyond this squared distance a point adds nothing
       const k = this.key(Math.floor(p.x / CELL), Math.floor(p.z / CELL));
       if (!this.grid.has(k)) this.grid.set(k, []);
       this.grid.get(k).push(p);
     }
     this.reach = Math.ceil((rMax + BLEND) / CELL);
-    this.far = [];
+    // far field: flat [x, z, h, x, z, h, ...] (the hot loops below read it per sample)
     const farStep = Math.max(1, Math.round(25 / P.ds));
-    for (let i = 0; i < P.N; i += farStep) this.far.push([P.px[i], P.pz[i], P.py[i]]);
+    const far = [];
+    for (let i = 0; i < P.N; i += farStep) far.push(P.px[i], P.pz[i], P.py[i]);
+    this.far = Float64Array.from(far);
     // hills: a few metres on a flat circuit, ~10 m around Spa, more towards the horizon
     this.hillAmp = Math.min(10, Math.max(2, P.elevationRange * 0.1));
   }
@@ -147,8 +150,11 @@ export class TerrainField {
       for (let gz = cz - R; gz <= cz + R; gz++) {
         const list = this.grid.get(this.key(gx, gz));
         if (!list) continue;
-        for (const p of list) {
-          const e = Math.hypot(p.x - x, p.z - z) - p.r;
+        for (let k = 0; k < list.length; k++) {
+          const p = list[k];
+          const dx = p.x - x, dz = p.z - z, d2 = dx * dx + dz * dz;
+          if (d2 >= p.rb2) continue; // e >= BLEND: too far to count
+          const e = Math.sqrt(d2) - p.r;
           if (e < 0) {
             inside = Math.min(inside, p.h);
             eMin = Math.min(eMin, e);
@@ -164,12 +170,14 @@ export class TerrainField {
     if (inside < Infinity) return { y: inside - TERRAIN_DROP, clear: eMin, mown: 1 };
 
     let fw = 0, fh = 0, d2min = Infinity;
-    for (const [px, pz, ph] of this.far) {
-      const d2 = (px - x) ** 2 + (pz - z) ** 2;
-      d2min = Math.min(d2min, d2);
+    const far = this.far;
+    for (let k = 0; k < far.length; k += 3) {
+      const dx = far[k] - x, dz = far[k + 1] - z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < d2min) d2min = d2;
       const w = 1 / (d2 + 120 * 120);
       fw += w;
-      fh += w * ph;
+      fh += w * far[k + 2];
     }
     const dist = Math.sqrt(d2min);
     const amp = this.hillAmp * (1 + 2.5 * smoothstep(700, 3500, dist));
@@ -425,7 +433,12 @@ export function buildTrees(P, field, stands, group, trackId, scenery, occupied =
 
 function farDist(field, x, z) {
   let d2 = Infinity;
-  for (const [px, pz] of field.far) d2 = Math.min(d2, (px - x) ** 2 + (pz - z) ** 2);
+  const far = field.far;
+  for (let k = 0; k < far.length; k += 3) {
+    const dx = far[k] - x, dz = far[k + 1] - z;
+    const d = dx * dx + dz * dz;
+    if (d < d2) d2 = d;
+  }
   return Math.sqrt(d2);
 }
 

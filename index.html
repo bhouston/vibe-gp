@@ -64,6 +64,7 @@
       <div class="panel timing">
         <div class="row track"><span id="track-name"></span></div>
         <div class="row team"><span id="team-name"></span></div>
+        <div class="row pos" id="pos-row" hidden><span class="label">POS</span><span id="pos">-</span></div>
         <div class="row"><span class="label">LAP</span><span id="lap">OUT</span></div>
         <div class="row big"><span class="label">TIME</span><span id="current">--:--.---</span></div>
         <div class="row"><span class="label">LAST</span><span id="last">--:--.---</span></div>
@@ -101,6 +102,14 @@
 
       <div class="panel map"><svg id="minimap"></svg></div>
 
+      <div id="director" class="director" hidden></div>
+      <div id="director-label" hidden></div>
+      <div id="monitor" class="monitor" hidden><div class="monitor-view"></div><div class="monitor-caption"></div></div>
+      <div id="standings" class="panel standings" hidden>
+        <div class="head"><span id="standings-title">RACE</span><span id="standings-laps"></span></div>
+        <ol id="standings-list"></ol>
+      </div>
+
       <div id="flash"></div>
       <div id="surface"></div>
 
@@ -110,17 +119,45 @@
         </svg>
       </button>
 
-      <div id="settings" class="panel settings" hidden>
-        <h2>Settings</h2>
-        <div id="settings-toggles" class="settings-toggles"></div>
-        <h3>Controls</h3>
-        <div class="help">
-          <div><b>W / ↑</b> throttle &nbsp; <b>S / ↓</b> brake / reverse</div>
-          <div><b>A D / ← →</b> steer</div>
-          <div><b>1 2 3</b> tyres for the next pit stop: soft / medium / hard</div>
-          <div><b>F</b> change the front wing at the next pit stop</div>
-          <div><b>C</b> camera (<span id="cam">CHASE</span>) &nbsp; <b>R</b> reset &nbsp; <b>Esc</b> tracks</div>
-          <div class="dim">Renderer: <span id="backend">…</span></div>
+      <div id="settings" class="settings-overlay" hidden>
+        <div class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+          <header class="settings-head">
+            <h2 id="settings-title">Settings</h2>
+            <button type="button" class="settings-close" title="Close (Esc)" aria-label="Close settings">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6 L18 18 M18 6 L6 18" /></svg>
+            </button>
+          </header>
+          <nav class="settings-tabs" role="tablist" aria-label="Settings sections"></nav>
+          <div class="settings-body">
+            <section data-tab="controls" hidden>
+              <h3>Driving</h3>
+              <dl class="keys">
+                <dt><kbd>W</kbd><kbd>↑</kbd></dt><dd>Throttle</dd>
+                <dt><kbd>S</kbd><kbd>↓</kbd></dt><dd>Brake / reverse</dd>
+                <dt><kbd>A</kbd><kbd>D</kbd><kbd>←</kbd><kbd>→</kbd></dt><dd>Steer</dd>
+                <dt><kbd>R</kbd></dt><dd>Restart</dd>
+                <dt><kbd>Esc</kbd><kbd>P</kbd></dt><dd>Pause</dd>
+              </dl>
+              <h3>Pit stop</h3>
+              <dl class="keys">
+                <dt><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></dt><dd>Tyres for the next stop: soft / medium / hard</dd>
+                <dt><kbd>F</kbd></dt><dd>Change the front wing at the next stop</dd>
+              </dl>
+              <h3>Cameras</h3>
+              <dl class="keys">
+                <dt><kbd>C</kbd></dt><dd>Camera view (now: <span id="cam">CHASE</span>)</dd>
+                <dt><kbd>V</kbd></dt><dd>Free cam. Click a car in the timing tower to watch it</dd>
+                <dt><kbd>[</kbd><kbd>]</kbd></dt><dd>Free cam: previous / next car</dd>
+                <dt><kbd>G</kbd></dt><dd>Free cam: take or hand back the wheel</dd>
+                <dt><kbd>B</kbd></dt><dd>Free cam: replay the last crash or spin</dd>
+                <dt><kbd>M</kbd></dt><dd>Director mode: every car's onboard and the highlights</dd>
+              </dl>
+            </section>
+            <section data-tab="display" hidden>
+              <p class="settings-note">Renderer: <span id="backend">…</span></p>
+            </section>
+          </div>
+          <p class="settings-hint">Changes save automatically · Esc to close</p>
         </div>
       </div>
       <div id="touch">
@@ -157,7 +194,7 @@
           <button id="btn-back" class="menu-btn">← Back</button>
           <button id="btn-go" class="menu-btn primary go">GO</button>
         </div>
-        <p class="hint">Arrow keys to choose · Enter to race · Backspace to go back · Esc in-game to come back here</p>
+        <p class="hint">Arrow keys to choose · Enter to race · Backspace to go back · Esc in-game pauses (Change car or circuit comes back here)</p>
       </section>
     </div>
 
