@@ -4,6 +4,8 @@ import * as THREE from 'three/webgpu';
 const MODES = ['chase', 'far', 'cockpit', 'driver', 'tv'];
 // eye-level view is wider so the side mirrors stay in shot
 const DRIVER_FOV = 74;
+// the chase cams follow a car into the air a little behind, like a TV camera operator
+const AIR_FOLLOW = 3; // 1/s
 
 export class CameraRig {
   constructor(camera) {
@@ -13,6 +15,9 @@ export class CameraRig {
     this.look = new THREE.Vector3();
     this.initialised = false;
     this.baseFov = camera.fov;
+    this.air = 0; // the car's height in the air, as the chase cams follow it (lagging)
+    this.up = new THREE.Vector3(0, 1, 0); // the onboard cams' up: the car's, in the air
+    this._m = new THREE.Matrix4();
   }
 
   get mode() {
@@ -29,6 +34,9 @@ export class CameraRig {
     const cam = this.camera;
     const { x, z } = car.position;
     const y = car.height ?? 0; // road height under the car
+    const air = car.air ?? 0; // and how far above it the car is
+    // the chase cams' share of it: catching up, not snapping (straight there on a new view)
+    this.air = this.initialised ? this.air + (air - this.air) * (1 - Math.exp(-AIR_FOLLOW * dt)) : air;
     const yaw = car.yaw;
     const fx = Math.sin(yaw), fz = Math.cos(yaw);
     const speed = Math.abs(car.speed);
@@ -53,14 +61,16 @@ export class CameraRig {
         const T = this.track;
         const hBack = T ? T.heightAt(car.trackS - back, car.lateral) : y;
         const hAhead = T ? T.heightAt(car.trackS + 4, car.lateral) : y;
-        targetPos = new THREE.Vector3(x - dx * back, Math.max(y, hBack) + up, z - dz * back);
-        targetLook = new THREE.Vector3(x + fx * 4, hAhead + 0.9, z + fz * 4);
+        // in the air the camera rises after the car, and looks at where the car is now
+        targetPos = new THREE.Vector3(x - dx * back, Math.max(y, hBack) + up + this.air, z - dz * back);
+        targetLook = new THREE.Vector3(x + fx * 4, hAhead + 0.9 + air, z + fz * 4);
         stiffness = 1000; // already smoothed via camYaw
         break;
       }
       case 'cockpit': {
-        // T-cam: mounted on top of the airbox, looking over the halo
-        const chassis = visual.group; // follows the road's slope, not the body's pitch/roll
+        // T-cam: mounted on top of the airbox, looking over the halo. It follows the road's
+        // slope and the whole car's turn in the air, not the body's pitch/roll on its springs
+        const chassis = visual.tilt ?? visual.group;
         chassis.updateWorldMatrix(true, false);
         targetPos = chassis.localToWorld(new THREE.Vector3(0, 1.22, -0.3));
         targetLook = chassis.localToWorld(new THREE.Vector3(0, 0.6, 20));
@@ -68,16 +78,18 @@ export class CameraRig {
         break;
       }
       case 'driver': {
-        // helmet cam: just ahead of the visor, pitching/rolling with the chassis,
-        // with the halo above and both mirrors at the edges of the view
+        // helmet cam: at the driver's eyes (the helmet is hidden), pitching/rolling with
+        // the chassis, looking over the steering wheel, with the halo above, its slim
+        // centre pillar ahead and both mirrors at the edges of the view
         const body = visual.body;
         body.updateWorldMatrix(true, false);
-        targetPos = body.localToWorld(new THREE.Vector3(0, 0.78, 0.15));
-        targetLook = body.localToWorld(new THREE.Vector3(0, 0.74, 20));
+        targetPos = body.localToWorld(new THREE.Vector3(0, 0.84, 0.0));
+        targetLook = body.localToWorld(new THREE.Vector3(0, -0.5, 20)); // ~4 degrees down
         stiffness = 1000;
         break;
       }
       case 'tv': {
+        // (looks at the car, in the air too)
         // fixed trackside cameras: use whichever spot is closest to the car
         let best = null, bestD = Infinity;
         for (const c of this.tvCams || []) {
@@ -86,7 +98,7 @@ export class CameraRig {
         }
         if (best !== this.tvCam) { this.tvCam = best; this.initialised = false; }
         targetPos = best ? new THREE.Vector3(best.x, best.y, best.z) : new THREE.Vector3(x + 30, y + 10, z);
-        targetLook = new THREE.Vector3(x, y + 0.5, z);
+        targetLook = new THREE.Vector3(x, y + air + 0.5, z);
         stiffness = 1000;
         break;
       }
@@ -101,7 +113,16 @@ export class CameraRig {
     this.pos.lerp(targetPos, k);
     this.look.lerp(targetLook, Math.min(1, k * 1.6));
     cam.position.copy(this.pos);
-    cam.lookAt(this.look);
+    // onboard, the horizon tilts as the car turns over in the air (on the ground the car's
+    // up is the road's, as before). Built here rather than through camera.up, which the
+    // free cam's lookAt shares
+    const onboard = this.mode === 'cockpit' || this.mode === 'driver';
+    const tilt = onboard ? visual?.tilt : null;
+    if (tilt && (tilt.rotation.x || tilt.rotation.z)) {
+      tilt.updateWorldMatrix(true, false);
+      this.up.set(0, 1, 0).transformDirection(tilt.matrixWorld);
+      cam.quaternion.setFromRotationMatrix(this._m.lookAt(this.pos, this.look, this.up));
+    } else cam.lookAt(this.look);
 
     // speed sensation: widen FOV a little at speed (not in TV view)
     const base = this.mode === 'driver' ? DRIVER_FOV : this.baseFov;

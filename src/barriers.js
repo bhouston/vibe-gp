@@ -8,6 +8,7 @@ import {
   positionWorld, mx_noise_float,
 } from 'three/tsl';
 import { ribbonGeometry, boxGeometry } from './geometry.js';
+import { squareWave } from './materials.js';
 import { adBoardColor, AD_ASPECT } from './ads.js';
 import { WALL_THICKNESS, flagRuns } from './trackPath.js';
 
@@ -117,7 +118,7 @@ export function concreteWallMaterial([ca, cb] = [0xc81414, 0xf5f5f5], seed = 0) 
   const inAd = step(AD_LOW, h).mul(step(h, AD_HIGH));
   const ad = adBoardColor(along.add(100000), h.sub(AD_LOW).div(AD_HIGH - AD_LOW), AD_LEN, seed);
   c = mix(c, ad, inAd);
-  const stripe = step(0.5, fract(along.div(3.0)));
+  const stripe = squareWave(along.div(3.0)); // filtered: seen far along the wall from the cockpit
   const band = step(0.96, h);
   c = mix(c, mix(color(ca), color(cb), stripe), band);
   m.colorNode = c;

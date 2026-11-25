@@ -397,7 +397,8 @@ function cityFacadeMaterial() {
 
 /**
  * Real buildings around the circuit: see the module header. Returns { occupied(x, z) }
- * (is there a building here?) for other scenery to keep out of.
+ * (is there a building here?) for other scenery to keep out of, and roofAt(x, z, pad):
+ * the highest roof of the buildings within pad metres of (x, z), or null.
  */
 export function buildCityscape(P, field, stands, group, def) {
   const { list, stats } = planBuildings(P, def, stands);
@@ -411,6 +412,7 @@ export function buildCityscape(P, field, stands, group, def) {
   // occupancy grid (4 m cells) so trees keep out of buildings
   const OCC = 4, occ = new Set();
   const okey = (cx, cz) => cx * 100003 + cz;
+  const built = []; // { pts, bb, top } of each building raised
   for (const b of list) {
     const pts = b.pts;
     const ys = pts.map(([x, z]) => field.sample(x, z).y);
@@ -454,6 +456,7 @@ export function buildCityscape(P, field, stands, group, def) {
     const under = b.minHeight > 0 ? gAvg + b.minHeight : null;
     if (under !== null) foot = under;
     if (top < foot + 2.5) continue;
+    built.push({ pts, bb: bbox(pts), top });
     const wallTop = top - foot;
     const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length, cz = pts.reduce((s, p) => s + p[1], 0) / pts.length;
     const tk = `${Math.floor(cx / TILE)},${Math.floor(cz / TILE)}`;
@@ -509,7 +512,23 @@ export function buildCityscape(P, field, stands, group, def) {
       for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) if (occ.has(okey(gx + dx, gz + dz))) return true;
       return false;
     },
+    roofAt: (x, z, pad = 0) => {
+      let roof = null;
+      for (const { pts, bb, top } of built) {
+        if (x < bb[0] - pad || x > bb[2] + pad || z < bb[1] - pad || z > bb[3] + pad) continue;
+        if (roof !== null && top <= roof) continue;
+        if (inPoly(pts, x, z) || pts.some((a, k) => segDist(x, z, a, pts[(k + 1) % pts.length]) < pad)) roof = top;
+      }
+      return roof;
+    },
   };
+}
+
+/** Distance from (x, z) to the segment a-b. */
+function segDist(x, z, a, b) {
+  const dx = b[0] - a[0], dz = b[1] - a[1], l2 = dx * dx + dz * dz || 1;
+  const t = Math.min(1, Math.max(0, ((x - a[0]) * dx + (z - a[1]) * dz) / l2));
+  return Math.hypot(x - a[0] - dx * t, z - a[1] - dz * t);
 }
 
 // ---------------------------------------------------------------- tunnels

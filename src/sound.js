@@ -1,8 +1,8 @@
 // Game audio. Everything is synthesised with the Web Audio API: there are no sample files.
 //
 //   master -> limiter -> speakers
-//     music   the looping track from music.js (on / off in Settings)
-//     sfx     (on / off in Settings; silent behind the menu)
+//     music   the looping track from music.js (on / off and volume in Settings)
+//     sfx     (on / off and volume in Settings; silent behind the menu)
 //       car   engine, tyres, impacts: quieter and duller the further the camera is
 //       wind  on-board only: there is no rushing air at a trackside camera
 //
@@ -163,6 +163,8 @@ export class Sound {
     this.ctx = null;
     this.musicOn = true;
     this.sfxOn = true;
+    this.musicVol = 1; // gains from the Settings sliders (setMusicVolume / setSfxVolume)
+    this.sfxVol = 1;
     this.sandy = false; // the circuit's "grass" is really sand (desert and dune circuits)
     this.musicStarted = false;
     this.gear = 1;
@@ -440,13 +442,24 @@ export class Sound {
   setMusic(on) {
     this.musicOn = on;
     if (!this.ctx) return;
-    this.glide(this.musicBus.gain, on ? 0.5 : 0, 0.25);
+    this.glide(this.musicBus.gain, on ? 0.5 * this.musicVol : 0, 0.25);
     if (on && !this.musicStarted) this.startMusic();
   }
 
   setSfx(on) {
     this.sfxOn = on;
-    if (this.ctx) this.glide(this.sfx.gain, on ? 1 : 0, 0.08);
+    if (this.ctx) this.glide(this.sfx.gain, on ? this.sfxVol : 0, 0.08);
+  }
+
+  /** Settings slider, 0..100. Squared, so the slider's middle sounds about half as loud. */
+  setMusicVolume(percent) {
+    this.musicVol = (percent / 100) ** 2;
+    if (this.ctx && this.musicOn) this.glide(this.musicBus.gain, 0.5 * this.musicVol, 0.1);
+  }
+
+  setSfxVolume(percent) {
+    this.sfxVol = (percent / 100) ** 2;
+    if (this.ctx && this.sfxOn) this.glide(this.sfx.gain, this.sfxVol, 0.05);
   }
 
   async startMusic() {
@@ -477,9 +490,13 @@ export class Sound {
     // always take these, or a crash before the first key press would play on it
     const hit = car.impact, hitSide = car.impactSide, scrape = car.scrape;
     car.impact = car.scrape = 0;
+    // touching down after a flight: a thump from how fast it came down (unless the physics
+    // reported the landing as an impact of its own)
+    const landed = this.flight?.car === car && !car.airborne ? this.flight.fall : 0;
+    this.flight = car.airborne ? { car, fall: Math.max(0, -(car.vy ?? 0)) } : null;
     if (!this.ctx || this.ctx.state !== 'running') return;
 
-    if (this.musicOn) this.glide(this.musicBus.gain, racing ? 0.3 : 0.55, 0.4);
+    if (this.musicOn) this.glide(this.musicBus.gain, (racing ? 0.3 : 0.55) * this.musicVol, 0.4);
     const air = Math.hypot(car.vel.x, car.vel.z);
     const doppler = this.updateView(car, air, camera, mode, racing);
     this.updateEngine(car, doppler, racing);
@@ -489,6 +506,7 @@ export class Sound {
     this.glide(this.scrapeTone.frequency, 500 + scrape * 32, 0.05);
     this.scrapeGrains.playbackRate.value = 1 + scrape / 30;
     if (hit > 1 && racing) this.impact(hit, hitSide);
+    else if (landed > 1 && racing) this.impact(landed, 0);
   }
 
   /** Levels for the camera in use. Returns the Doppler pitch factor (1 on board). */
@@ -576,7 +594,8 @@ export class Sound {
     const side = { road: 0, kerb: 0, grass: 0, sand: 0 };
     let ridgeSpacing = 1.1, squeal = 0, squealSide = 0, squealSlip = 0;
     const drift = clamp((Math.abs(car.slipAngle ?? 0) - 0.08) / 0.2); // the body sideways, from about 5 degrees
-    for (const w of car.wheels) {
+    // in the air no tyre touches anything: no rumble, no squeal (they fade out)
+    for (const w of car.airborne ? [] : car.wheels) {
       const name = w.surface.name;
       const layer = name === 'grass' && this.sandy ? 'sand' : LAYER_OF[name];
       const roll = w.rollSpeed ?? 0;

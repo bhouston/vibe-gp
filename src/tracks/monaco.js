@@ -8,7 +8,6 @@
 // lap, projected to local metres (equirectangular at 43.7362) with the origin on the start
 // line, lightly smoothed and resampled (denser through corners).
 import elevation from './elevation/monaco.js';
-import city from './city/monaco.js';
 
 export default {
   id: 'monaco',
@@ -21,8 +20,9 @@ export default {
   geo: { lat: 43.7350233, lon: 7.4212666, projLat: 43.7362 },
   elevation, // m above sea level around the lap (real terrain, see the generated file)
   runoff: 2, // m between the kerbs and the walls: a street circuit
-  // buildings, coastline, old city walls and piers around the circuit (scripts/fetch-city.mjs)
-  city,
+  // buildings, coastline, old city walls and piers around the circuit (scripts/fetch-city.mjs):
+  // hundreds of kB, so only loaded with the circuit (Track.create)
+  loadCity: () => import('./city/monaco.js'),
   // lap metres [from, to] in tunnels (OSM tunnel / covered ways)
   tunnels: [[1400, 1862]],
   // red/white kerbs
@@ -74,6 +74,7 @@ export default {
   ],
   // pit lane from OSM, from where it leaves the track to where it rejoins
   pitlane: {
+    hug: true, // OSM draws it midway to the Swimming Pool: pull it in beside the start straight
     points: [
       [137.3, -293.6], [131.7, -291.9], [127.7, -287.7], [125.4, -282.3], [124.4, -276.4], [123.9, -262.3], [123.4, -256.4], [121.4, -250.9],
       [117.9, -246], [107.3, -234], [101, -226.3], [96.2, -219.8], [88.9, -207.8], [80.2, -192], [75.8, -183], [68.6, -166.5],

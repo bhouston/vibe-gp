@@ -452,8 +452,7 @@ ${desc}
 // Reference: OpenStreetMap ${src} ((c) OpenStreetMap contributors, ODbL), chained into the
 // lap, projected to local metres (equirectangular at ${geo.projLat}) with the origin on the start
 // line, lightly smoothed and resampled (denser through corners).
-import elevation from './elevation/${id}.js';${c.city ? `
-import city from './city/${id}.js';` : ''}
+import elevation from './elevation/${id}.js';
 
 export default {
   id: '${id}',
@@ -466,8 +465,9 @@ export default {
   geo: { lat: ${geo.lat}, lon: ${geo.lon}, projLat: ${geo.projLat} },
   elevation, // m above sea level around the lap (real terrain, see the generated file)${c.runoff !== undefined ? `
   runoff: ${c.runoff}, // m between the kerbs and the walls: a street circuit` : ''}${c.city ? `
-  // buildings, coastline, old city walls and piers around the circuit (scripts/fetch-city.mjs)
-  city,` : ''}${tunnels.length ? `
+  // buildings, coastline, old city walls and piers around the circuit (scripts/fetch-city.mjs):
+  // hundreds of kB, so only loaded with the circuit (Track.create)
+  loadCity: () => import('./city/${id}.js'),` : ''}${tunnels.length ? `
   // lap metres [from, to] in tunnels (OSM tunnel / covered ways)
   tunnels: ${JSON.stringify(tunnels).replace(/,/g, ', ')},` : ''}
   // ${c.kerbNote}
@@ -481,7 +481,8 @@ ${corners.map((k) => `    { name: ${JSON.stringify(k.name)}, at: ${k.at} },`).jo
 ${fmt(points)}
   ],${pit ? `
   // pit lane from OSM, from where it leaves the track to where it rejoins
-  pitlane: {
+  pitlane: {${c.pitHug ? `
+    hug: true, // ${c.pitHug}` : ''}
     points: [
 ${fmt(pit).replace(/^ {4}/gm, '      ')}
     ],

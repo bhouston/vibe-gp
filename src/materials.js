@@ -4,9 +4,18 @@ import {
   color, float, vec2, vec3, uv, mix, step, fract, floor, abs, smoothstep, sin,
   positionWorld, positionWorldDirection, mx_noise_float, mx_fractal_noise_float, length, max,
   positionLocal, normalLocal, texture, attribute, cameraPosition, fwidth, bumpMap,
-  positionGeometry, normalGeometry, uniform, mx_worley_noise_float, time,
+  positionGeometry, normalGeometry, uniform, mx_worley_noise_float, time, select, fog,
 } from 'three/tsl';
 import { landSample } from './land.js';
+import { ANISOTROPY } from './quality.js';
+
+/**
+ * A colour (or number) as a uniform rather than a constant. A constant is written into the
+ * shader code, so materials that differ only in colour each compile their own shader; with
+ * uniforms, every car's wings, halo, mirrors etc. share one (11 cars on the grid).
+ */
+export const tint = (hex) => uniform(new THREE.Color(hex));
+export const ufloat = (x) => uniform(x);
 
 /**
  * Tileable noise in a texture (256 x 256, repeating): r and g = 3-octave fractal noise with
@@ -46,25 +55,47 @@ const NOISE_TEX = (() => {
   t.magFilter = THREE.LinearFilter;
   t.minFilter = THREE.LinearMipmapLinearFilter;
   t.generateMipmaps = true;
+  t.anisotropy = ANISOTROPY;
   t.needsUpdate = true;
   return t;
 })();
 /** Sample the noise texture at world xz `p` scaled by `s` (texture tiles per metre). */
 const tnoise = (p, s) => texture(NOISE_TEX, p.mul(s));
 
+/**
+ * ~10 cm grain for tarmac and paving, in 0..1. Taken from the mipmapped noise texture
+ * rather than computed (mx_noise), so far down the road it filters down to its average
+ * instead of sparkling; two scales with unrelated periods hide the texture's tiling.
+ */
+export const fineGrain = (p) => tnoise(p, 9 / 16).b.mul(0.6).add(tnoise(p, 13 / 32).a.mul(0.4)).sub(0.5).mul(1.3).add(0.5);
+
+/**
+ * Stripes, box-filtered over the pixel: 0 where fract(x) < 0.5, 1 above, the same as
+ * step(0.5, fract(x)) up close, but averaged over the pixel's footprint, so stripes too
+ * fine for the screen (far kerbs, the run-off paint seen from the cockpit) fade to an
+ * even 0.5 instead of crawling and breaking into moiré.
+ */
+export function squareWave(x) {
+  const w = max(fwidth(x), 1e-4);
+  const F = (t) => floor(t).mul(0.5).add(max(fract(t).sub(0.5), 0.0)); // integral of the wave
+  return F(x.add(w.mul(0.5))).sub(F(x.sub(w.mul(0.5)))).div(w).clamp(0, 1);
+}
+
 /** Tarmac: fine grain noise + a darker rubbered-in racing line. */
 export function asphaltMaterial() {
   const m = new THREE.MeshStandardNodeMaterial();
   const p = positionWorld.xz;
-  const grain = mx_noise_float(p.mul(9.0)).mul(0.5).add(0.5);
+  const grain = fineGrain(p);
   const patches = mx_fractal_noise_float(p.mul(0.08), 3).mul(0.5).add(0.5);
   const base = mix(color(0x2a2b2e), color(0x3b3c40), grain.mul(0.6).add(patches.mul(0.4)));
   // uv.y spans inner (0) -> outer (1) edge of the track; racing line sits near the middle
   const across = uv().y;
   const line = smoothstep(0.22, 0.0, abs(across.sub(0.5)));
   const lined = mix(base, color(0x1d1e20), line.mul(0.55));
-  // painted white edge lines
-  const edge = step(0.965, across).add(step(across, 0.035)).clamp(0, 1);
+  // painted white edge lines, their inner edges antialiased: the coverage of the line in
+  // the pixel, so far down the road a line thinner than a pixel fades instead of breaking up
+  const aa = max(fwidth(across), 1e-5);
+  const edge = across.sub(0.965).div(aa).add(0.5).clamp(0, 1).add(float(0.035).sub(across).div(aa).add(0.5).clamp(0, 1)).clamp(0, 1);
   m.colorNode = mix(lined, color(0xe8e8e8), edge);
   m.roughnessNode = mix(float(0.9), float(0.75), line).sub(grain.mul(0.08));
   m.metalnessNode = float(0.0);
@@ -110,7 +141,7 @@ export function sausageMaterial() {
 /** Kerbs: alternating stripes of two colours (red/white by default) along uv.x. */
 export function kerbMaterial(stripes, [a, b] = [0xd81e1e, 0xf2f2f2]) {
   const m = new THREE.MeshStandardNodeMaterial();
-  const s = step(0.5, fract(uv().x.mul(stripes)));
+  const s = squareWave(uv().x.mul(stripes));
   m.colorNode = mix(color(a), color(b), s);
   m.roughnessNode = float(0.55);
   return m;
@@ -164,9 +195,7 @@ export function grassMaterial(ground = 'grass') {
   let c = mix(meadow, lawn, mown);
 
   // mowing stripes: 3.5 m bands, alternate blade lean along the mowing direction
-  const band = abs(uv().y).div(3.5);
-  const aa = fwidth(band).add(0.001);
-  const dir = smoothstep(float(0.5).sub(aa), float(0.5).add(aa), fract(band)).mul(2.0).sub(1.0);
+  const dir = squareWave(abs(uv().y).div(3.5)).mul(2.0).sub(1.0);
   const view = positionWorld.xz.sub(cameraPosition.xz).normalize();
   const lean = view.dot(vec2(g.x, g.y)).mul(dir); // + = blades lean away from the viewer: lighter
   const stripeFade = smoothstep(450.0, 120.0, dist).mul(striped).mul(ground === 'desert' ? 0 : 1);
@@ -194,7 +223,10 @@ export function grassMaterial(ground = 'grass') {
 export function landBlend(base, baseRough) {
   const grain = tnoise(positionWorld.xz, 1.3 / 16).b.sub(0.5).mul(0.16).add(1.0);
   const t = landSample.a;
-  return { color: mix(base, landSample.rgb.mul(grain), t), rough: mix(baseRough, float(0.9), t) };
+  // the texture is premultiplied (no-land texels are transparent black), so its filtered
+  // and mipmapped colour is already weighted by coverage: add it, don't mix it in again
+  // (which darkened every edge between land and plain ground)
+  return { color: base.mul(t.oneMinus()).add(landSample.rgb.mul(grain)), rough: mix(baseRough, float(0.9), t) };
 }
 
 /**
@@ -215,7 +247,7 @@ export function pavedMaterial({ paint = [0x4a4c50, 0x4a4c50], glow = null } = {}
   const dist = length(cameraPosition.sub(positionWorld));
   const near = smoothstep(160.0, 20.0, dist);
 
-  const grain = mx_noise_float(p.mul(9.0)).mul(0.5).add(0.5);
+  const grain = fineGrain(p);
   const macro = mx_fractal_noise_float(p.mul(0.004), 3).mul(0.5).add(0.5);
   const mid = mx_fractal_noise_float(p.mul(0.03), 3).mul(0.5).add(0.5);
   // hardstanding: dark asphalt, with paler concrete plazas and slab joints here and there
@@ -227,9 +259,7 @@ export function pavedMaterial({ paint = [0x4a4c50, 0x4a4c50], glow = null } = {}
   ground = mix(ground, concrete, plaza);
 
   // run-off: 3 m diagonal bands of paint over the asphalt, scuffed and streaked by tyres
-  const band = uv().x.add(abs(uv().y)).div(6.0);
-  const aa = fwidth(band).add(0.001);
-  const b = smoothstep(float(0.5).sub(aa), float(0.5).add(aa), fract(band));
+  const b = squareWave(uv().x.add(abs(uv().y)).div(6.0));
   let painted = mix(color(paint[0]), color(paint[1]), b);
   const wear = mx_fractal_noise_float(p.mul(vec2(0.6, 0.6)), 3).mul(0.5).add(0.5);
   painted = mix(painted, color(0x1f2022), smoothstep(0.62, 0.85, wear).mul(0.55));
@@ -262,7 +292,7 @@ export function runoffMaterial(paint = null, pattern = 'diagonal', edge = 8.6) {
   const p = positionWorld.xz;
   const dist = length(cameraPosition.sub(positionWorld));
   const near = smoothstep(160.0, 20.0, dist);
-  const grain = mx_noise_float(p.mul(9.0)).mul(0.5).add(0.5);
+  const grain = fineGrain(p);
   const patches = mx_fractal_noise_float(p.mul(0.06), 3).mul(0.5).add(0.5);
   const wear = mx_fractal_noise_float(p.mul(0.5), 3).mul(0.5).add(0.5);
   let c;
@@ -280,8 +310,7 @@ export function runoffMaterial(paint = null, pattern = 'diagonal', edge = 8.6) {
       }
     } else {
       const band = pattern === 'along' ? abs(uv().y).div(3.0) : uv().x.add(abs(uv().y)).div(6.0);
-      const aa = fwidth(band).add(0.001);
-      const b = pattern === 'solid' ? float(0) : smoothstep(float(0.5).sub(aa), float(0.5).add(aa), fract(band));
+      const b = pattern === 'solid' ? float(0) : squareWave(band);
       c = mix(color(paint[0]), color(paint[1] ?? paint[0]), b);
     }
     c = mix(c, color(0x26272a), smoothstep(0.62, 0.88, wear).mul(0.5));
@@ -328,13 +357,7 @@ export function checkerMaterial(cols, rows) {
 
 /** Glossy car paint with clearcoat. */
 export function paintMaterial(hex) {
-  const m = new THREE.MeshPhysicalNodeMaterial();
-  m.colorNode = color(hex);
-  m.roughnessNode = float(0.32);
-  m.metalnessNode = float(0.15);
-  m.clearcoatNode = float(1.0);
-  m.clearcoatRoughnessNode = float(0.06);
-  return m;
+  return liveryMaterial(tint(hex));
 }
 
 /**
@@ -344,9 +367,10 @@ export function paintMaterial(hex) {
 export function liveryMaterial(colorNode, finish = {}) {
   const m = new THREE.MeshPhysicalNodeMaterial();
   m.colorNode = colorNode;
-  m.roughnessNode = float(finish.roughness ?? 0.32);
-  m.metalnessNode = float(finish.metalness ?? 0.15);
-  m.clearcoatNode = float(finish.clearcoat ?? 1.0);
+  // uniforms, not constants: teams' finishes differ but their shaders can be shared
+  m.roughnessNode = ufloat(finish.roughness ?? 0.32);
+  m.metalnessNode = ufloat(finish.metalness ?? 0.15);
+  m.clearcoatNode = ufloat(finish.clearcoat ?? 1.0);
   m.clearcoatRoughnessNode = float(0.06);
   return m;
 }
@@ -362,7 +386,7 @@ export function wheelCoverMaterial(baseHex, ringHex) {
   const ring = smoothstep(0.76, 0.78, r).mul(smoothstep(0.88, 0.86, r));
   const mark = smoothstep(0.03, 0.02, abs(d.y)).mul(smoothstep(0.3, 0.32, r)).mul(smoothstep(0.62, 0.6, r)).mul(step(0.0, d.x));
   const hub = smoothstep(0.2, 0.18, r);
-  let c = mix(color(baseHex), color(ringHex), ring.add(mark).clamp(0, 1));
+  let c = mix(tint(baseHex), tint(ringHex), ring.add(mark).clamp(0, 1));
   c = mix(c, color(0x0c0c0e), hub);
   m.colorNode = c;
   m.roughnessNode = float(0.35);
@@ -415,10 +439,13 @@ function sidewallTexture() {
  * The compound colour is a uniform (m.userData.compound) so a tyre change needs no new
  * shader; the pattern uses the raw geometry so it also works on instanced tyres.
  */
-export function tyreMaterial(radius, compoundHex = 0xd8261c) {
+export function tyreMaterial(radius, compoundHex = 0xd8261c, { perObject = false } = {}) {
   const m = new THREE.MeshStandardNodeMaterial();
   const p = positionGeometry;
   const compound = uniform(new THREE.Color(compoundHex));
+  // shared by many cars (the AI's): each tyre mesh carries its own colour in
+  // userData.tyreColor, so one shader serves every compound
+  if (perObject) compound.onObjectUpdate(({ object }) => object.userData.tyreColor ?? compound.value);
   const rr = length(p.yz).div(radius); // 0.63 at the bead, 1 on the tread
   const side = smoothstep(0.55, 0.75, abs(normalGeometry.x)); // sidewall faces only
   const ring = smoothstep(0.715, 0.725, rr).mul(smoothstep(0.765, 0.755, rr)).mul(side);
@@ -469,21 +496,83 @@ export function simpleMaterial(hex, roughness = 0.6, metalness = 0) {
   return m;
 }
 
+/** Share of the day sky covered by cloud (0 = clear, 1 = overcast). */
+export const cloudCover = uniform(0.42);
+const CLOUD_HEIGHT = 1800; // m: the cloud layer, a flat sheet this far above the eye
+
 /**
- * Sky gradient + sun glow, used as scene.backgroundNode and (prefiltered) as the IBL environment.
- * `sunDisc: false` drops the bright disc so a directional light can stand in for it.
+ * Day sky seen in direction `d` (a normalised direction node, d.y >= 0): the horizon to
+ * zenith gradient and the sun's glow, optionally the sun disc and a layer of clouds.
+ * Shared by the sky dome and the distance haze, so far land fades into the sky behind it.
  */
-export function skyNode(sunDir, { sunDisc = true } = {}) {
-  const d = positionWorldDirection;
+function daySky(d, sunDir, { sunDisc = false, clouds = false } = {}) {
   const h = max(d.y, 0.0);
   const horizon = color(0xcfe3f2), zenith = color(0x3a76c4);
   let sky = mix(horizon, zenith, h.pow(0.55));
   const sun = max(d.dot(vec3(...sunDir).normalize()), 0.0);
-  const disc = sunDisc ? sun.pow(400.0).mul(2.0) : float(0.0);
-  sky = sky.add(color(0xfff1d0).mul(disc.add(sun.pow(12.0).mul(0.25))));
+  const glow = sun.pow(12.0).mul(0.25);
+  sky = sky.add(color(0xfff1d0).mul(glow));
+  let cover = float(0.0);
+  if (clouds) {
+    // where the view ray meets a flat cloud sheet overhead; fbm from the noise texture
+    // (large billows plus finer lumps), cut off at a threshold set by the cover
+    const p = d.xz.mul(float(CLOUD_HEIGHT).div(max(h, 0.04)));
+    const n = tnoise(p, 1 / 9000).r.mul(0.65).add(tnoise(p.add(vec2(3100, 1700)), 1 / 2300).g.mul(0.35));
+    const th = float(1.0).sub(cloudCover).mul(0.55).add(0.25);
+    // thin out into the haze towards the horizon, where the sheet is too foreshortened to read
+    cover = smoothstep(th, th.add(0.16), n).mul(smoothstep(0.03, 0.22, h));
+    // thick cores are grey underneath, thin edges bright, and brighter still near the sun
+    const core = smoothstep(th.add(0.06), th.add(0.3), n);
+    const lit = mix(float(1.05), float(0.7), core).add(glow.mul(2.0).mul(core.oneMinus()));
+    const cloud = mix(color(0xffffff), horizon, smoothstep(0.35, 0.05, h).mul(0.5)).mul(lit);
+    sky = mix(sky, cloud, cover);
+  }
+  if (sunDisc) sky = sky.add(color(0xfff1d0).mul(sun.pow(400.0).mul(2.0).mul(cover.oneMinus())));
+  return sky;
+}
+
+/**
+ * Sky gradient, sun glow and clouds, used as scene.backgroundNode and (prefiltered) as the
+ * IBL environment. `sunDisc: false` drops the bright disc so a directional light can stand
+ * in for it.
+ */
+export function skyNode(sunDir, { sunDisc = true, clouds = true } = {}) {
+  const d = positionWorldDirection;
+  const sky = daySky(d, sunDir, { sunDisc, clouds });
   // below horizon fades to a hazy ground colour
   const below = smoothstep(0.0, -0.08, d.y);
   return mix(sky, color(0x8fa38a), below);
+}
+
+/**
+ * Aerial perspective, as the scene's fogNode: haze whose colour is the sky right behind
+ * the shaded point (warm and bright towards the sun, bluer away from it), so distant hills
+ * melt into the sky instead of into one flat grey, and whose density thins with height,
+ * so valleys are hazier than ridgelines. Night (nightU = 1): a dark haze of one colour.
+ * The uniforms are set per atmosphere (density) and per circuit (base: its lowest ground).
+ */
+export const haze = {
+  density: uniform(0.00042), // 1/m at the base height
+  falloff: uniform(1 / 220), // 1/m: density shrinks by e every 220 m higher
+  base: uniform(0), // m
+  far: uniform(4000), // m: fully hazed before the camera's far plane
+  nightColor: uniform(new THREE.Color(0x0a0d15)),
+};
+export function hazeNode(sunDir, nightU) {
+  const ray = positionWorld.sub(cameraPosition);
+  const dist = max(length(ray), 1e-3);
+  const dir = ray.div(dist);
+  // the sky at the horizon, for points level with or below the eye
+  const sky = daySky(vec3(dir.x, max(dir.y, 0.0), dir.z).normalize(), sunDir);
+  const col = mix(sky, haze.nightColor, nightU);
+  // optical depth through haze of density a * exp(-b (y - base)) along the ray:
+  // a * exp(-b (y0 - base)) * dist * (1 - exp(-k)) / k, k = b * (rise of the ray)
+  const k = haze.falloff.mul(ray.y);
+  const kk = select(abs(k).lessThan(1e-3), float(1e-3), k);
+  const shape = kk.negate().exp().oneMinus().div(kk);
+  const tau = haze.density.mul(haze.falloff.negate().mul(cameraPosition.y.sub(haze.base)).exp()).mul(dist).mul(shape);
+  const amount = max(tau.negate().exp().oneMinus(), smoothstep(haze.far.mul(0.72), haze.far.mul(0.97), dist));
+  return fog(col, amount);
 }
 
 /**

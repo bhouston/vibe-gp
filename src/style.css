@@ -1,4 +1,5 @@
-* { box-sizing: border-box; }
+/* manipulation: no double-tap zoom anywhere (iOS ignores user-scalable=no in the viewport) */
+* { box-sizing: border-box; touch-action: manipulation; }
 html, body {
   margin: 0;
   height: 100%;
@@ -46,6 +47,7 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
 .settings-btn {
   pointer-events: auto;
   position: absolute;
+  z-index: 3; /* above the pause menu */
   top: 16px;
   right: 16px;
   width: 40px;
@@ -64,50 +66,114 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
 .settings-btn:hover svg, .settings-btn.active svg { transform: rotate(60deg); }
 .settings-btn.active { color: #fff; background: rgba(10, 12, 18, 0.85); }
 
-.settings {
-  pointer-events: auto;
-  top: 64px;
-  right: 16px;
-  width: 320px;
-  z-index: 2;
-  background: rgba(10, 12, 18, 0.88);
-}
-.settings[hidden] { display: none; }
-.settings h2 { margin: 2px 0 10px; font-size: 13px; letter-spacing: 0.16em; text-transform: uppercase; }
-.settings h3 { margin: 14px 0 6px; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #9aa3b5; }
-.settings-toggles { display: flex; flex-direction: column; gap: 6px; }
-.setting {
+
+/* the settings popup: centred over everything, like the pause menu (which it can open over) */
+.settings-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4; /* above the pause menu and the gear button */
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-  padding: 8px 10px;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(8, 10, 16, 0.6);
+  backdrop-filter: blur(3px);
+  pointer-events: auto;
+}
+.settings-overlay[hidden] { display: none; }
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 100%);
+  height: min(640px, 100%);
+  border-radius: 14px;
+  border-left: 3px solid var(--team, #e10600);
+  background: rgba(10, 12, 18, 0.94);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.settings-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 18px 10px 24px; }
+.settings-head h2 { margin: 0; font-size: 26px; font-weight: 900; font-style: italic; letter-spacing: 0.12em; text-transform: uppercase; }
+.settings-close {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  padding: 8px;
   border: 0;
   border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #d6dbe6;
+  cursor: pointer;
+}
+.settings-close:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+.settings-close svg { display: block; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+.settings-tabs { display: flex; gap: 4px; margin: 0 24px; padding: 4px; border-radius: 10px; background: rgba(255, 255, 255, 0.05); }
+.settings-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 8px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: #9aa3b5;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.settings-tab:hover { color: #fff; }
+.settings-tab.active { background: var(--team, #e10600); color: #fff; }
+.settings-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 24px 16px; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #3a4152 transparent; }
+.settings-body section { display: flex; flex-direction: column; gap: 6px; }
+.settings-body section[hidden] { display: none; }
+.settings-body h3 { margin: 14px 0 2px; font-size: 11px; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; color: #9aa3b5; }
+.settings-hint { margin: 0; padding: 10px 24px 14px; border-top: 1px solid rgba(255, 255, 255, 0.06); color: #8790a3; font-size: 12px; text-align: center; }
+.settings-note { margin: 10px 2px 0; color: #8790a3; font-size: 12px; }
+
+.setting {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 9px;
   background: rgba(255, 255, 255, 0.05);
   color: #fff;
   font: inherit;
   text-align: left;
-  cursor: pointer;
 }
-.setting:hover { background: rgba(255, 255, 255, 0.09); }
-.setting b { display: block; font-size: 14px; }
-.setting small { display: block; margin-top: 2px; letter-spacing: 0.02em; }
+.setting.toggle { flex-wrap: nowrap; cursor: pointer; }
+.setting.toggle:hover:not(:disabled) { background: rgba(255, 255, 255, 0.09); }
+.setting.disabled { opacity: 0.4; }
+.setting.disabled, .setting.disabled * { cursor: default; }
+.setting-text { flex: 1 1 200px; min-width: 0; }
+.setting b { display: block; font-size: 14px; font-weight: 700; }
+.setting small { display: block; margin-top: 2px; font-size: 12px; line-height: 1.35; letter-spacing: 0.01em; overflow-wrap: anywhere; }
+.setting.slider { flex-direction: column; align-items: stretch; flex-wrap: nowrap; gap: 6px; }
+.setting-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.setting.slider .value { flex: none; min-width: 3.5em; text-align: right; font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--team, #e10600); filter: brightness(1.3); }
+.setting.slider input { width: 100%; margin: 2px 0 0; accent-color: var(--team, #e10600); cursor: pointer; }
 .switch {
   flex: none;
   position: relative;
-  width: 36px;
-  height: 20px;
-  border-radius: 10px;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
   background: #3a4050;
   transition: background 0.15s;
 }
 .switch::after {
   content: '';
   position: absolute;
-  top: 2px;
-  left: 2px;
+  top: 3px;
+  left: 3px;
   width: 16px;
   height: 16px;
   border-radius: 50%;
@@ -115,11 +181,118 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
   transition: transform 0.15s;
 }
 .setting.on .switch { background: var(--team, #e10600); }
-.setting.on .switch::after { transform: translateX(16px); }
+.setting.on .switch::after { transform: translateX(18px); }
+.segments { flex: none; display: flex; gap: 2px; margin-left: auto; padding: 3px; border-radius: 8px; background: rgba(0, 0, 0, 0.35); }
+.segments button {
+  min-width: 44px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: #9aa3b5;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.segments button:hover:not(:disabled) { color: #fff; }
+.segments button.on { background: var(--team, #e10600); color: #fff; }
 
-.help { font-size: 13px; line-height: 1.6; color: #d6dbe6; }
-.help b { color: #fff; }
-.help .dim { color: #8790a3; }
+/* Controls tab: key caps beside what they do */
+.keys { display: grid; grid-template-columns: minmax(112px, max-content) 1fr; gap: 6px 14px; align-items: center; margin: 0; padding: 10px 14px; border-radius: 9px; background: rgba(255, 255, 255, 0.05); }
+.keys dt { display: flex; flex-wrap: wrap; gap: 3px; }
+.keys dd { margin: 0; font-size: 13px; line-height: 1.35; color: #d6dbe6; }
+.keys kbd { min-width: 22px; padding: 1px 6px; border: 1px solid #3a4152; border-bottom-width: 2px; border-radius: 4px; background: rgba(255, 255, 255, 0.04); font: inherit; font-size: 11px; font-weight: 700; text-align: center; color: #fff; }
+
+/* a short screen (a phone on its side): tighter, and the panel takes the whole height */
+@media (max-height: 500px) {
+  .settings-overlay { padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); }
+  .settings-panel { height: 100%; }
+  .settings-head { padding: 8px 10px 6px 18px; }
+  .settings-head h2 { font-size: 18px; }
+  .settings-tabs { margin: 0 18px; }
+  .settings-tab { padding: 6px 4px; }
+  .settings-body { padding: 0 18px 10px; }
+  .settings-body h3 { margin-top: 10px; }
+  .setting { padding: 8px 12px; }
+  .settings-hint { display: none; }
+}
+/* narrow screens: the tab labels get smaller rather than cut off */
+@media (max-width: 420px) {
+  .settings-tab { font-size: 11px; letter-spacing: 0.04em; }
+  .settings-head { padding-left: 18px; }
+  .settings-tabs { margin: 0 12px; }
+  .settings-body { padding: 4px 12px 12px; }
+}
+
+/* pause menu (src/pause.js): over the HUD, under the settings panel it can open */
+#pause {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(8, 10, 16, 0.55);
+  backdrop-filter: blur(3px);
+  pointer-events: auto;
+}
+#pause[hidden] { display: none; }
+.pause-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: min(360px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 26px 28px 20px;
+  border-radius: 14px;
+  border-left: 3px solid var(--team, #e10600);
+  background: rgba(10, 12, 18, 0.88);
+}
+#pause h2 { margin: 0; font-size: 34px; font-weight: 900; font-style: italic; letter-spacing: 0.12em; text-transform: uppercase; }
+.pause-info { margin: 0 0 8px; color: #9aa3b5; font-size: 13px; letter-spacing: 0.06em; text-align: center; }
+.pause-items { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.pause-btn { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-width: 0; padding: 11px 22px; font-size: 14px; letter-spacing: 0.1em; white-space: nowrap; }
+.pause-btn:hover { transform: none; }
+.pause-btn.focused { border-color: var(--team, #e10600); background: color-mix(in srgb, var(--team, #e10600) 22%, rgba(20, 23, 32, 0.9)); }
+.pause-btn kbd { font: inherit; font-size: 11px; font-weight: 700; color: #9aa3b5; border: 1px solid #3a4152; border-radius: 4px; padding: 1px 6px; }
+.pause-hint { margin: 6px 0 0; color: #8790a3; font-size: 12px; }
+/* a phone on its side: the panel has to fit ~360 px of height */
+@media (max-height: 500px) {
+  .pause-panel { gap: 6px; padding: 12px 18px 10px; }
+  #pause h2 { font-size: 22px; }
+  .pause-info { margin: 0 0 2px; font-size: 12px; }
+  .pause-items { gap: 6px; }
+  .pause-btn { padding: 7px 16px; font-size: 12px; }
+}
+
+/* race standings (AI opponents): a timing tower down the left side */
+.standings { top: 222px; left: 16px; min-width: 210px; padding: 8px 10px; font-variant-numeric: tabular-nums; font-size: 13px; }
+.standings[hidden] { display: none; }
+.standings .head { display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; letter-spacing: 0.12em; color: #9aa3b5; margin-bottom: 4px; }
+.standings ol { list-style: none; margin: 0; padding: 0; }
+.standings li { display: grid; grid-template-columns: 22px 6px 1fr 16px auto; gap: 6px; align-items: center; line-height: 1.55; padding: 0 4px; border-radius: 4px; }
+.standings li i { width: 4px; height: 13px; border-radius: 2px; }
+.standings li .p { color: #9aa3b5; text-align: right; }
+.standings li .gap { color: #c9cfdb; font-size: 12px; }
+.standings li .tyre { width: 12px; height: 12px; border: 2px solid; border-radius: 50%; font-size: 8px; line-height: 12px; text-align: center; font-weight: 800; }
+.standings li.me { background: color-mix(in srgb, var(--team, #e10600) 35%, transparent); font-weight: 700; }
+.standings li.done .gap { color: #7dff9a; }
+.standings li.out { opacity: 0.45; }
+.standings li.out .gap { color: #ff5a3c; }
+.standings li.pit .gap { color: #3d7bff; font-weight: 700; }
+/* free cam: click a car in the tower to watch it (the watched one is outlined) */
+.standings { pointer-events: auto; }
+.standings li { cursor: pointer; }
+.standings li:hover { background: rgba(255, 255, 255, 0.08); }
+.standings li.watch { box-shadow: inset 0 0 0 1.5px #3d7bff; background: rgba(61, 123, 255, 0.18); }
+.timing .row.pos span:last-child { font-weight: 700; }
+.timing .row[hidden] { display: none; }
 
 #flash {
   position: absolute;
@@ -401,14 +574,15 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
 @media (pointer: coarse) {
   html, body { overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
   #touch { display: block; }
-  #menu .hint, .settings h3, .settings .help, .compound-pick, .tyres, .timing .row.track, .timing .row.team { display: none; }
+  #menu .hint, .settings-tab.tab-controls, .settings-hint, .compound-pick, .tyres, .timing .row.track, .timing .row.team { display: none; }
   .timing, .dash, .damage-map { right: auto; bottom: auto; transform-origin: top left; }
   .timing { top: 8px; left: max(8px, env(safe-area-inset-left)); transform: scale(0.6); }
   .dash { top: 8px; left: calc(max(8px, env(safe-area-inset-left)) + 134px); transform: scale(0.6); }
   .damage-map { top: 84px; left: max(8px, env(safe-area-inset-left)); transform: scale(0.45); }
   .map { top: 60px; right: max(8px, env(safe-area-inset-right)); transform: scale(0.45); transform-origin: top right; }
+  .pause-btn kbd, .pause-hint { display: none; }
+  .standings { top: 150px; left: max(8px, env(safe-area-inset-left)); transform: scale(0.5); transform-origin: top left; }
   .settings-btn { top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right)); width: 44px; height: 44px; }
-  .settings { top: 60px; right: max(8px, env(safe-area-inset-right)); max-height: calc(100dvh - 68px); overflow-y: auto; }
 }
 
 /* a phone on its side: the menu has to fit a short screen */
@@ -486,3 +660,43 @@ small { color: #9aa3b5; font-size: 11px; letter-spacing: 0.14em; }
 }
 @keyframes loading-sweep { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
 .loading-step { margin-top: 10px; font-size: 13px; color: rgba(255, 255, 255, 0.65); min-height: 1.2em; }
+
+/* incident monitor (free cam): picture-in-picture of a crash or spin, then its replay.
+   The picture itself is drawn in the 3D view behind this frame (src/incidents.js). */
+/* bottom middle, a little left: clear of the timing tower, the damage diagram and the dash */
+.monitor { --w: min(30vw, 380px); position: absolute; left: max(250px, calc(50% - var(--w) / 2 - 90px)); bottom: 16px; width: var(--w); pointer-events: auto; cursor: pointer; }
+.monitor[hidden] { display: none; }
+.monitor-view { aspect-ratio: 16 / 9; border: 2px solid var(--team, #e10600); border-bottom-width: 0; border-radius: 8px 8px 0 0; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45); }
+.monitor-caption { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; overflow: hidden; padding: 5px 10px; border-radius: 0 0 8px 8px; background: color-mix(in srgb, var(--team, #e10600) 60%, #0b0d12); color: #fff; font-size: 13px; letter-spacing: 0.06em; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); }
+.monitor-caption i { font-style: normal; font-size: 11px; font-weight: 800; padding: 1px 6px; border-radius: 4px; background: rgba(0, 0, 0, 0.45); }
+.monitor-caption i.live { color: #ff4d4d; }
+.monitor-caption i.replay { color: #ffd400; }
+.monitor-caption small { margin-left: auto; overflow: hidden; text-overflow: ellipsis; color: rgba(255, 255, 255, 0.75); font-size: 10px; }
+
+/* director mode (M): a column of onboard monitors down the left edge (captions over the
+   pictures), the running order on the right under the minimap and the highlights (incident
+   monitor) in the bottom right corner. The lap timer, dash and damage diagram (your car's)
+   step aside. The pictures are drawn in the 3D view behind these frames (src/director.js). */
+#hud.director-on { --dv-h: calc((100vh - 72px) / 11); }
+#hud.director-on .timing, #hud.director-on .dash, #hud.director-on .damage-map { visibility: hidden; }
+.director { position: absolute; z-index: 2; left: 10px; top: 10px; display: flex; flex-direction: column; gap: 4px; padding: 6px; border-radius: 10px; background: rgba(8, 10, 14, 0.55); pointer-events: auto; }
+.director[hidden] { display: none; }
+.dv-tile { position: relative; height: var(--dv-h); aspect-ratio: 16 / 9; cursor: pointer; border-radius: 5px; overflow: hidden; box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--team, #888) 70%, transparent); }
+.dv-tile[hidden] { display: none; }
+.dv-tile:hover { box-shadow: inset 0 0 0 2px #fff; }
+.dv-tile.on { box-shadow: inset 0 0 0 3px #fff; }
+.dv-view { position: absolute; inset: 0; }
+.dv-caption { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: 4px; align-items: center; padding: 1px 5px; font-size: 10px; line-height: 1.35; white-space: nowrap; overflow: hidden; background: color-mix(in srgb, var(--team, #333) 60%, rgba(11, 13, 18, 0.6)); color: #fff; }
+.dv-caption span { overflow: hidden; text-overflow: ellipsis; }
+.dv-caption em { margin-left: auto; font-style: normal; font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.85); }
+.dv-tile.out { opacity: 0.45; }
+.dv-tile.out em { color: #ff5a3c; font-weight: 700; }
+/* the running order under the minimap, the highlights in the corner below it */
+#hud.director-on .standings { top: 228px; left: auto; right: 64px; width: 200px; min-width: 0; }
+#hud.director-on .standings li { grid-template-columns: 22px 6px minmax(0, 1fr) 16px auto; }
+#hud.director-on .standings li > span:nth-of-type(2) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#hud.director-on .monitor { left: auto; right: 16px; bottom: 16px; width: max(220px, min(28vw, 380px, calc((100vh - 548px) * 16 / 9))); }
+/* which car is in the main view, top middle */
+#director-label { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; align-items: baseline; padding: 6px 14px; border-radius: 999px; background: color-mix(in srgb, var(--team, #333) 55%, rgba(8, 10, 14, 0.8)); color: #fff; font-size: 14px; white-space: nowrap; letter-spacing: 0.04em; }
+#director-label[hidden] { display: none; }
+#director-label small { color: rgba(255, 255, 255, 0.7); font-size: 11px; letter-spacing: 0.08em; }

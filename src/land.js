@@ -14,8 +14,9 @@
 // Map coordinates: +x east, +y north; world.x = x, world.z = -y.
 import * as THREE from 'three/webgpu';
 import { texture, uniform, positionWorld, vec2 } from 'three/tsl';
-import { VERGE } from './terrain.js';
+import { VERGE, SKIRT } from './terrain.js';
 import { PIT } from './trackPath.js';
+import { ANISOTROPY } from './quality.js';
 
 /** Land kinds, lowest priority first (a later kind is drawn over an earlier one). */
 export const LAND_KINDS = ['urban', 'farmland', 'meadow', 'grass', 'scrub', 'forest', 'sand', 'gravel', 'concrete', 'asphalt', 'water'];
@@ -267,6 +268,38 @@ export class LandMap {
       this.levels.push(level);
       this.bodies.push(cells);
     }
+    this.keepUnderRoad(field.P);
+  }
+
+  /**
+   * Keep each body's level QUAY below the lowest road it borders (track or pit lane). The
+   * shore heights can sit well above a road that dips down to the water (Monaco's harbour
+   * front: the shore is level with the start straight, the pool section 7 m lower), and
+   * water above the road shows over the barriers as a floating sheet.
+   */
+  keepUnderRoad(P) {
+    const QUAY = 1;
+    const cap = new Float64Array(this.levels.length).fill(Infinity);
+    const near = (x, z, r, y) => {
+      for (let d = -r; d <= r; d += CELL / 2) {
+        for (let e = -r; e <= r; e += CELL / 2) {
+          const k = this.idx(x + d, z + e);
+          const b = k < 0 ? -1 : this.body[k];
+          if (b >= 0 && y < cap[b]) cap[b] = y;
+        }
+      }
+    };
+    for (let i = 0; i < P.N; i += 2) {
+      const low = P.py[i] - Math.abs(P.bank[i]) * P.bankEdge;
+      // each side out past its barrier, verge and skirt: where the ground meets the water
+      for (const s of [1, -1]) {
+        const w = (s > 0 ? P.wallL[i] + P.tyreL[i] : P.wallR[i] + P.tyreR[i]) + VERGE + SKIRT + CELL * 2;
+        for (let d = 0; d <= w; d += CELL / 2) near(P.px[i] + P.leftX(i) * s * d, P.pz[i] + P.leftZ(i) * s * d, 0, low);
+      }
+    }
+    const pit = P.pit;
+    if (pit) for (let j = 0; j < pit.N; j += 2) near(pit.px[j], pit.pz[j], pit.outerHw(j) + PIT.wallClear + 22 + CELL * 2, pit.py[j]);
+    this.levels = this.levels.map((l, b) => Math.min(l, cap[b] - QUAY));
   }
 
   /** Water at a world point: { w (0..1, bilinear), level } or null. */
@@ -341,7 +374,12 @@ export class LandMap {
     }
     const tex = new THREE.DataTexture(data, nx, nz, THREE.RGBAFormat, THREE.UnsignedByteType);
     tex.colorSpace = THREE.SRGBColorSpace;
-    tex.magFilter = tex.minFilter = THREE.LinearFilter;
+    // mipmapped and anisotropic: from the cockpit the land is seen at a grazing angle,
+    // where an unfiltered 4 m raster shimmers (field edges, roads) as the car moves
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
+    tex.anisotropy = ANISOTROPY;
     tex.needsUpdate = true;
     return tex;
   }

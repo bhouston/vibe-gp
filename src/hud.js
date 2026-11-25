@@ -12,6 +12,20 @@ function compoundIcon(c) {
   </svg>`;
 }
 
+// Per-frame HUD writes go through these: they touch the page only when a value changes,
+// since every write (even of the same text) makes the browser redo the HUD's style and layout.
+const shown = new WeakMap(); // element -> { key: last value written }
+function changed(el, key, v) {
+  let m = shown.get(el);
+  if (!m) shown.set(el, (m = {}));
+  if (m[key] === v) return false;
+  m[key] = v;
+  return true;
+}
+const setText = (el, v) => changed(el, '#text', (v = String(v))) && (el.textContent = v);
+const setStyle = (el, prop, v) => changed(el, prop, v) && el.style.setProperty(prop, v);
+const setAttr = (el, name, v) => changed(el, '@' + name, v) && el.setAttribute(name, v);
+
 export class Hud {
   constructor() {
     this.el = {
@@ -39,6 +53,13 @@ export class Hud {
     };
     this.damageParts = buildDamageCar(document.getElementById('damage-car'));
     this.onCompound = null; // set by main: (compound) => void
+    this.onPick = null; // set by main: (race entry) => void, a car clicked in the timing tower
+    this.watching = null; // the race entry being watched (its tower row is marked)
+    document.getElementById('standings-list').addEventListener('click', (ev) => {
+      const li = ev.target.closest('li[data-i]');
+      const e = li && this.race?.entries[+li.dataset.i];
+      if (e) this.onPick?.(e);
+    });
     this.onWing = null; // set by main: () => void, toggles the wing change
     this.el.wingChange.addEventListener('mousedown', (e) => e.preventDefault());
     this.el.wingChange.addEventListener('click', () => this.onWing?.());
@@ -96,37 +117,110 @@ export class Hud {
     this.el.trackName.textContent = def.name;
   }
 
+  /**
+   * The race field (src/ai.js Race, or null for a solo run): a minimap dot per AI car,
+   * the timing tower and the position row.
+   */
+  setRace(race) {
+    this.race = race;
+    this.el.map.querySelectorAll('.map-ai').forEach((n) => n.remove());
+    this.aiDots = [];
+    const tower = document.getElementById('standings');
+    tower.hidden = !race;
+    document.getElementById('pos-row').hidden = !race;
+    this.towerAt = -1;
+    if (!race || !this.mapCar) return;
+    for (const e of race.ai) {
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.classList.add('map-ai');
+      c.setAttribute('r', (this.mapSw * 0.95).toFixed(1));
+      c.setAttribute('fill', e.team.ui.primary);
+      c.setAttribute('stroke', e.team.ui.accent);
+      c.setAttribute('stroke-width', (this.mapSw * 0.3).toFixed(1));
+      this.mapCar.before(c); // the player's dot stays on top
+      this.aiDots.push({ e, c });
+    }
+  }
+
+  updateRace(now) {
+    const race = this.race;
+    if (!race) return;
+    for (const { e, c } of this.aiDots) {
+      setAttr(c, 'cx', e.physics.position.x.toFixed(1));
+      setAttr(c, 'cy', e.physics.position.z.toFixed(1));
+      setAttr(c, 'opacity', e.retired ? '0.35' : '1');
+    }
+    const me = race.player;
+    setText(this.el.pos ??= document.getElementById('pos'), `${me.position} / ${race.entries.length}`);
+    setText(this.el.lap, me.finished ? 'FINISHED' : me.lap === 0 ? 'OUT' : `${Math.min(me.lap, race.laps)} / ${race.laps}`);
+    // the tower: a few times a second is plenty
+    if (now - this.towerAt < 0.25) return;
+    this.towerAt = now;
+    const leader = race.order[0];
+    const done = me.finished;
+    document.getElementById('standings-title').textContent = done ? 'FINAL RESULT' : race.leaderDone ? 'CHEQUERED FLAG' : 'RACE';
+    const lap = Math.min(race.laps, Math.max(1, leader.lap));
+    document.getElementById('standings-laps').textContent = `LAP ${lap}/${race.laps}`;
+    const L = race.path.length;
+    const rows = race.order.map((e) => {
+      let gap = '';
+      if (race.sinceGreen === 0) gap = `P${e.slot + 1}`; // on the grid: the starting slot
+      else if (e.retired) gap = 'OUT';
+      else if (e.physics.onPitLane && !e.finished) gap = 'PIT';
+      else if (e.position === 1) gap = e.finished ? formatTime(e.finishTime) : 'LEADER';
+      else if (e.finished && leader.finished) {
+        const lapsDown = race.laps - Math.round(e.flagAt / L);
+        gap = lapsDown > 0 ? `+${lapsDown} LAP${lapsDown > 1 ? 'S' : ''}` : `+${(e.finishTime - leader.finishTime).toFixed(1)}`;
+      } else {
+        const down = Math.floor((leader.progress - e.progress) / L);
+        gap = down >= 1 ? `+${down} LAP${down > 1 ? 'S' : ''}` : `+${race.gapTo(e, leader).toFixed(1)}`;
+      }
+      const name = e.isPlayer ? 'YOU' : e.team.name;
+      // the tyre each car is on, in its sidewall colour (and the AI's driving style on hover)
+      const c = e.physics.compound;
+      const tyre = c ? `<b class="tyre" style="color:${c.css};border-color:${c.css}">${c.letter}</b>` : '<b></b>';
+      const stops = e.stops ? `${e.stops} stop${e.stops > 1 ? 's' : ''}` : 'no stops';
+      const title = ` title="${e.style ? `${e.style.name} driver · ` : ''}${c ? `${c.name.toLowerCase()}s · ` : ''}${stops}"`;
+      const pit = gap === 'PIT' ? ' pit' : '';
+      const watch = e === this.watching ? ' watch' : '';
+      return `<li data-i="${race.entries.indexOf(e)}"${title} class="${e.isPlayer ? 'me' : ''}${e.finished ? ' done' : ''}${e.retired ? ' out' : ''}${pit}${watch}"><span class="p">${e.position}</span><i style="background:${e.team.ui.primary}"></i><span>${name}</span>${tyre}<span class="gap">${gap}</span></li>`;
+    });
+    document.getElementById('standings-list').innerHTML = rows.join('');
+  }
+
   update(car, timer, camMode, pitStop = null) {
     const e = this.el;
     if (this.mapCar) {
-      this.mapCar.setAttribute('cx', car.position.x.toFixed(1));
-      this.mapCar.setAttribute('cy', car.position.z.toFixed(1));
+      setAttr(this.mapCar, 'cx', car.position.x.toFixed(1));
+      setAttr(this.mapCar, 'cy', car.position.z.toFixed(1));
     }
-    e.speed.textContent = Math.round(Math.abs(car.speed) * 3.6);
-    e.gear.textContent = car.gear;
-    e.rpm.style.width = `${(car.rpm * 100).toFixed(1)}%`;
+    setText(e.speed, Math.round(Math.abs(car.speed) * 3.6));
+    setText(e.gear, car.gear);
+    setStyle(e.rpm, 'width', `${(car.rpm * 100).toFixed(1)}%`);
     e.rpm.classList.toggle('redline', car.rpm > 0.93);
-    e.lap.textContent = timer.lap === 0 ? 'OUT' : timer.lap;
-    e.current.textContent = formatTime(timer.current);
-    e.last.textContent = formatTime(timer.last);
-    e.best.textContent = formatTime(timer.best);
-    e.cam.textContent = camMode.toUpperCase();
+    if (!this.race) setText(e.lap, timer.lap === 0 ? 'OUT' : timer.lap);
+    setText(e.current, formatTime(timer.current));
+    setText(e.last, formatTime(timer.last));
+    setText(e.best, formatTime(timer.best));
+    setText(e.cam, camMode.toUpperCase());
     const dirt = car.wheels.reduce((a, w) => a + w.dirt, 0) / 4;
     const dmg = car.damage;
     const wingHurt = dmg.wingHealth < 0.85;
     const wingNext = pitStop?.state === 'service' ? pitStop.changingWing : !!pitStop?.nextWing;
-    e.surface.textContent = pitText(pitStop, car) ?? (car.inPitLane ? 'PIT LIMITER 80' : car.onPitLane ? 'PIT LANE' : car.surface === 'gravel' ? 'IN THE GRAVEL' : car.surface === 'grass' || car.surface === 'runoff' ? 'OFF TRACK' : dirt > 0.15 ? 'DIRTY TYRES'
-      : wingHurt && !wingNext ? 'FRONT WING DAMAGED · F: NEW WING AT THE NEXT STOP' : '');
+    // in the air the wheels aren't on any surface: no gravel, grass or dirt to report
+    const surface = car.airborne ? null : car.surface;
+    setText(e.surface, pitText(pitStop, car) ?? (car.inPitLane ? 'PIT LIMITER 80' : car.onPitLane ? 'PIT LANE' : surface === 'gravel' ? 'IN THE GRAVEL' : surface === 'grass' || surface === 'runoff' ? 'OFF TRACK' : surface && dirt > 0.15 ? 'DIRTY TYRES'
+      : wingHurt && !wingNext ? 'FRONT WING DAMAGED · F: NEW WING AT THE NEXT STOP' : ''));
     // front wing: condition per half, and whether a new one goes on at the next stop
     dmg.wing.forEach((d, i) => {
       const el = e.wing[i];
       const lost = d >= DAMAGE.wingBreak;
       el.classList.toggle('lost', lost);
-      el.style.background = lost ? '' : damageColor(d / DAMAGE.wingBreak);
+      setStyle(el, 'background', lost ? '' : damageColor(d / DAMAGE.wingBreak));
     });
     // the whole car: every part coloured by its damage, dashed where it has broken off
     e.damageMap.classList.toggle('off', !car.damageOn);
-    e.damageState.textContent = car.damageOn ? 'DAMAGE' : 'DAMAGE OFF';
+    setText(e.damageState, car.damageOn ? 'DAMAGE' : 'DAMAGE OFF');
     for (const p of this.damageParts) {
       const d = p.i === null ? dmg[p.part] : dmg[p.part][p.i];
       const lost = d >= p.breakAt;
@@ -138,7 +232,7 @@ export class Hud {
     }
     e.wingChange.classList.toggle('selected', wingNext);
     e.wingChange.classList.toggle('needed', wingHurt);
-    e.wingChoice.textContent = wingNext ? 'YES' : 'NO';
+    setText(e.wingChoice, wingNext ? 'YES' : 'NO');
     const next = pitStop?.state === 'service' ? pitStop.fitting : pitStop?.nextCompound;
     for (const { c, b } of this.compoundButtons) b.classList.toggle('selected', c === next);
     const comp = car.compound;
@@ -147,15 +241,15 @@ export class Hud {
     if (fitted !== this.lastFitted) e.fitted.innerHTML = this.lastFitted = fitted;
     car.wheels.forEach((w, i) => {
       const el = e.tyres[i];
-      el.textContent = Math.round(w.temp);
+      setText(el, Math.round(w.temp));
       // colour by the compound's own window: softs are happy cooler than hards
-      el.style.background = tyreColor(w.temp + TYRE.tOpt - comp.tOpt);
+      setStyle(el, 'background', tyreColor(w.temp + TYRE.tOpt - comp.tOpt));
       el.classList.toggle('slide', w.slide > 1.05);
       el.classList.toggle('kerb', w.surface.name === 'kerb' || w.surface.name === 'sausage');
       el.classList.toggle('grass', w.surface.name === 'grass');
       el.classList.toggle('runoff', w.surface.name === 'runoff');
       el.classList.toggle('gravel', w.surface.name === 'gravel');
-      el.style.setProperty('--dmg', `${Math.round(w.damage * 100)}%`);
+      setStyle(el, '--dmg', `${Math.round(w.damage * 100)}%`);
       el.classList.toggle('damaged', w.damage > 0.5);
     });
     e.tc.classList.toggle('on', car.tc);
@@ -164,7 +258,7 @@ export class Hud {
     e.abs.classList.toggle('active', car.abs && car.absActive);
     const f = timer.flash;
     if (f && timer.time < f.until) {
-      e.flash.textContent = f.text;
+      setText(e.flash, f.text);
       e.flash.classList.add('show');
       e.flash.classList.toggle('best', !!f.best);
       e.flash.classList.toggle('warn', !!f.warn);

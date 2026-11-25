@@ -110,6 +110,8 @@ export const CIRCUITS = {
     // a street circuit: walls close to the kerbs; the city around it from scripts/fetch-city.mjs
     runoff: 2, city: true,
     center: [43.7362, 7.4243], relation: 148194, radius: 1500,
+    // pitHug (written as the lane's `hug`, see src/trackPath.js): the reason, as a comment
+    pitHug: 'OSM draws it midway to the Swimming Pool: pull it in beside the start straight',
     start: [43.7350269, 7.4212652], // OSM node 4937755860 raceway=start-finish
     corners: [
       ['Sainte-Devote', 43.73696, 7.42159], ['Massenet', 43.738406, 7.427848], ['Casino', 43.739407, 7.427192],

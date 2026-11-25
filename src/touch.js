@@ -35,6 +35,8 @@ function steerPad(pad, input) {
 export function bindTouch(input) {
   const root = document.getElementById('touch');
   root.addEventListener('contextmenu', (e) => e.preventDefault()); // a long press isn't a menu
+  // no pinch zoom either: iOS Safari ignores user-scalable=no, but honours this (WebKit only)
+  for (const type of ['gesturestart', 'gesturechange']) document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
   steerPad(document.getElementById('touch-steer'), input);
   for (const el of root.querySelectorAll('[data-hold]')) holdKey(el, input, el.dataset.hold);
   for (const el of root.querySelectorAll('[data-tap]')) el.addEventListener('click', () => input.pressed.add(el.dataset.tap));

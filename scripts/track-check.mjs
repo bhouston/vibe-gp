@@ -8,12 +8,16 @@
 // lane, a second autopilot lap drives through it and reports the time lost.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { TRACKS } from '../src/tracks/index.js';
-import { TrackPath, KERB_WIDTH, PIT } from '../src/trackPath.js';
-import { CarPhysics, PARAMS } from '../src/physics.js';
-import { formatTime } from '../src/race.js';
-import { TEAMS, teamGarage } from '../src/teams.js';
-import { PitStop } from '../src/pitStop.js';
+// browser-only globals some modules touch at import time (logos.js builds Path2D objects)
+globalThis.location ??= { search: '' };
+globalThis.matchMedia ??= () => ({ matches: false, addEventListener() {} });
+globalThis.Path2D ??= class { constructor() {} addPath() {} moveTo() {} lineTo() {} bezierCurveTo() {} quadraticCurveTo() {} arc() {} ellipse() {} rect() {} closePath() {} };
+const { TRACKS } = await import('../src/tracks/index.js');
+const { TrackPath, KERB_WIDTH, PIT } = await import('../src/trackPath.js');
+const { CarPhysics, PARAMS } = await import('../src/physics.js');
+const { formatTime } = await import('../src/race.js');
+const { TEAMS, teamGarage } = await import('../src/teams.js');
+const { PitStop } = await import('../src/pitStop.js');
 
 const id = process.argv[2];
 const outDir = process.argv[3] || 'track-check';
@@ -92,6 +96,20 @@ if (pit) {
   console.log(`                  speed limit ${(PIT.speedLimit * 3.6).toFixed(0)} km/h over ${(pit.limitEnd - pit.limitStart).toFixed(0)} m, garages ${pit.garageStart >= 0 ? `${(pit.garageEnd - pit.garageStart).toFixed(0)} m (lap s ${pit.lapS(pit.garageStart).toFixed(0)}..${pit.lapS(pit.garageEnd).toFixed(0)})` : 'none'}`);
   console.log(`                  pit wall ${metres(P.pitWall)} m, merges ${metres(pit.side > 0 ? P.openL : P.openR)} m` + (pit.nudge > 0 ? `, lane moved out ${pit.nudge.toFixed(1)} m to fit a pit wall beside the ${P.width} m track` : ''));
   if (pit.garageStart < 0) problems.push('no straight stretch of pit lane long enough for garages');
+  // the garage block (facade to back wall) must stand clear of every bit of track, not
+  // just the stretch the lane runs beside (Monaco's lane has the Swimming Pool behind it)
+  let garageOnTrack = 0, garageS = 0;
+  for (let j = Math.ceil(pit.garageStart / pit.ds); pit.garageStart >= 0 && j <= pit.garageEnd / pit.ds; j++) {
+    for (let d = pit.outerHw(j) + PIT.wallClear; d <= pit.outerHw(j) + PIT.wallClear + PIT.garageDepth; d += 1) {
+      const q = P.query(pit.px[j] + pit.leftX(j) * pit.outer * d, pit.pz[j] + pit.leftZ(j) * pit.outer * d);
+      if (Math.abs(q.lateral) < P.hw + 1) {
+        garageOnTrack++;
+        garageS = q.s;
+        break;
+      }
+    }
+  }
+  if (garageOnTrack) problems.push(`the garage block stands on the track at ${garageOnTrack} lane samples (lap s ${garageS.toFixed(0)})`);
   if (P.pitConflicts.length) problems.push(`the pit lane's outer wall comes within a wall of the track at ${P.pitConflicts.length} samples`);
   const closes = P.walls.filter((w) => w.kind === 'close').length;
   if (closes < 2) problems.push(`expected run-off closing walls at the pit entry and exit, found ${closes}`);

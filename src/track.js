@@ -2,10 +2,11 @@
 // definition, using the centreline maths in trackPath.js. Everything follows the
 // track's height profile (TrackPath.py); the road is level across its width.
 import * as THREE from 'three/webgpu';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { boxGeometry, ribbonGeometry, planeXZ } from './geometry.js';
 import {
   asphaltMaterial, kerbMaterial, grassMaterial, checkerMaterial, simpleMaterial, layered,
-  gravelMaterial, sausageMaterial, pavedMaterial, runoffMaterial, waterMaterial,
+  gravelMaterial, sausageMaterial, pavedMaterial, runoffMaterial, waterMaterial, fineGrain,
 } from './materials.js';
 import { buildGarageFronts } from './pitBoxes.js';
 import { buildBarriers, slopeNormal } from './barriers.js';
@@ -35,7 +36,7 @@ const ILLUMINATED = {
 function pitLaneMaterial(garageStart, pitch, garages) {
   const m = new THREE.MeshStandardNodeMaterial();
   const p = positionWorld.xz;
-  const grain = mx_noise_float(p.mul(9.0)).mul(0.5).add(0.5);
+  const grain = fineGrain(p);
   const patches = mx_fractal_noise_float(p.mul(0.08), 3).mul(0.5).add(0.5);
   const tarmac = mix(color(0x2c2d30), color(0x3d3e42), grain.mul(0.6).add(patches.mul(0.4)));
   const across = uv().y, along = uv().x;
@@ -68,7 +69,10 @@ export class Track {
    */
   static async create(def, onProgress = () => {}) {
     onProgress(0, 'Loading map data');
-    if (def.loadLandOsm) def = { ...def, landOsm: (await def.loadLandOsm()).default };
+    // the circuit's surroundings and (street circuits) its city, fetched together
+    const [osm, city] = await Promise.all([def.loadLandOsm?.(), def.loadCity?.()]);
+    if (osm) def = { ...def, landOsm: osm.default };
+    if (city) def = { ...def, city: city.default };
     const t = new Track(def, { deferred: true });
     t.timings = []; // ms spent in each step (handy when a circuit loads slowly)
     let prev = null, t0 = performance.now();
@@ -173,6 +177,7 @@ export class Track {
     const city = this.def.city ? buildCityscape(P, this.field, this.stands, g, this.def)
       : osmBuildings.length ? buildCityscape(P, this.field, this.stands, g, { ...this.def, city: { buildings: osmBuildings, walls: [] } })
         : null;
+    this.city = city;
     if (this.def.city) buildCityWalls(P, this.field, g, this.def);
     yield [0.78, 'Planting trees'];
     buildTrees(P, this.field, this.stands, g, this.def.id, this.def.scenery, city?.occupied, this.land);
@@ -465,9 +470,22 @@ export class Track {
     // uv = (metres along, lateral offset); attribute grass = (mowing direction, stripes, mown)
     // (kink, on the main track: where a banked road's tilt ends, so the verge follows it there
     // and stays level beyond instead of cutting a straight line through the road)
-    const side = (count, at, edge, outer, runoff = 1, kink = null) => {
-      const stages = [[() => 0, edge, 0], [edge, outer, -TERRAIN_DROP - 0.4]];
+    // (step: the flat part is cut into strips about this wide (m), so a height limit that
+    // at(k).p applies per vertex holds across it, not just at its two edges)
+    const side = (count, at, edge, outer, runoff = 1, kink = null, step = 0) => {
+      let stages = [[() => 0, edge, 0], [edge, outer, -TERRAIN_DROP - 0.4]];
       if (kink) stages.splice(0, 1, [() => 0, kink, 0], [kink, edge, 0]);
+      if (step > 0) {
+        stages = stages.flatMap(([from, to, drop]) => {
+          if (drop !== 0) return [[from, to, drop]];
+          let wide = 0;
+          for (let k = 0; k < count; k++) wide = Math.max(wide, Math.abs(to(k) - from(k)));
+          const n = Math.max(1, Math.ceil(wide / step));
+          const cut = (m) => (k) => from(k) + ((to(k) - from(k)) * m) / n;
+          return Array.from({ length: n }, (_, m) => [cut(m), m === n - 1 ? to : cut(m + 1), 0]);
+        });
+      }
+      const parts = [];
       for (const [from, to, drop] of stages) {
         const geo = ribbonGeometry(count, (k) => {
           const c = at(k), a = from(k), b = to(k);
@@ -479,8 +497,10 @@ export class Track {
           grass.set([t[0], t[1], runoff, 1, t[0], t[1], runoff, 1], k * 8);
         }
         geo.setAttribute('grass', new THREE.BufferAttribute(grass, 4));
-        geos.push(geo);
+        parts.push(geo);
       }
+      geos.push(parts.length > 1 ? mergeGeometries(parts) : parts[0]);
+      for (const geo of parts.length > 1 ? parts : []) geo.dispose();
     };
     const insideCap = (k, sgn) => (sgn * k > 0 ? 0.9 / Math.abs(k) : Infinity);
 
@@ -502,9 +522,24 @@ export class Track {
     if (pit) {
       const kp = new Float64Array(pit.N); // lane curvature (+ = turning left)
       for (let j = 1; j < pit.N - 1; j++) kp[j] = angleDiff(pit.heading[j + 1], pit.heading[j - 1]) / (2 * pit.ds);
+      // The lane's grass is level with the lane, but on its way out it runs under the
+      // track's asphalt and verges (at the merges, and beside the lane where the track's
+      // run-off reaches past the pit wall). There the track's height differs from the
+      // lane's by a few cm (grade, crossfall), enough for flat grass to poke up through
+      // the road in long jagged slivers, or z-fight with it from a distant camera: keep it
+      // a little under the track's surface wherever the track's verges reach.
+      const UNDER = 0.05;
       const laneAt = (j) => {
         const lx = pit.leftX(j), lz = pit.leftZ(j), h = pit.py[j];
-        return { n: slopeNormal(pit.grade[j], pit.tx[j], pit.tz[j]), t: [pit.tx[j], pit.tz[j]], s: j * pit.ds, p: (lat, dy) => [pit.px[j] + lx * lat, h + dy, pit.pz[j] + lz * lat] };
+        const p = (lat, dy) => {
+          const x = pit.px[j] + lx * lat, z = pit.pz[j] + lz * lat;
+          let y = h + dy;
+          const q = P.query(x, z, pit.mainI[j], 30);
+          const reach = q.lateral > 0 ? P.wallL[q.i] + P.tyreL[q.i] : P.wallR[q.i] + P.tyreR[q.i];
+          if (Math.abs(q.lateral) <= reach + VERGE) y = Math.min(y, P.roadY(q.i, q.lateral) - UNDER);
+          return [x, y, z];
+        };
+        return { n: slopeNormal(pit.grade[j], pit.tx[j], pit.tz[j]), t: [pit.tx[j], pit.tz[j]], s: j * pit.ds, p };
       };
       for (const sgn of [1, -1]) {
         // the garage side reaches back under the garage block
@@ -512,7 +547,7 @@ export class Track {
         const cap = (j) => insideCap(kp[j], sgn);
         const edge = (j) => sgn * Math.max(PIT.hw + 0.5, Math.min(width(j), cap(j)));
         const outer = (j) => sgn * Math.max(Math.abs(edge(j)) + 0.5, Math.min(width(j) + SKIRT, cap(j)));
-        side(pit.N, laneAt, edge, outer, this.def.scenery?.paved ? 0 : 1);
+        side(pit.N, laneAt, edge, outer, this.def.scenery?.paved ? 0 : 1, null, 1.5);
       }
     }
     return geos;
@@ -552,9 +587,9 @@ export class Track {
     }
 
     if (gLen <= 0) return;
-    // garage block: facade on the lane's outer wall line, 16 m deep, 8 m tall
+    // garage block: facade on the lane's outer wall line, PIT.garageDepth deep, 8 m tall
     const front = (j) => pit.outerHw(j) + PIT.wallClear;
-    const depth = 16, height = 8;
+    const depth = PIT.garageDepth, height = 8;
     const j0 = Math.ceil(pit.garageStart / pit.ds), j1 = Math.floor(pit.garageEnd / pit.ds);
     // y is relative to the lane; the block's foot (y = 0) is sunk 1 m so it never floats on a slope
     const at = (j, lat, y) => [pit.px[j] + pit.leftX(j) * o * lat, pit.py[j] + (y === 0 ? -1 : y), pit.pz[j] + pit.leftZ(j) * o * lat];
@@ -633,20 +668,30 @@ export class Track {
   }
 
   /** Trackside TV camera spots every ~160 m, on the outside of the bend, between the fence and any stand. */
+  /**
+   * Fixed trackside TV cameras every ~160 m, on the outside of the corner: 4.5 m behind the
+   * barrier and 7 m up. In a tunnel they hang inside it, over the barrier (in front of the
+   * lining) under the ceiling (above it they would film the roof); where a building stands on that spot they
+   * come in to just behind the barrier, which buildings keep clear of (from inside or on
+   * top of the building they would film its walls or roof).
+   */
   placeTvCams() {
     const P = this.path;
     const cams = [];
     const step = Math.max(1, Math.round(160 / P.ds));
+    const tunnel = (i) => (this.def.tunnels ?? []).some(([s0, s1]) => i * P.ds >= s0 && i * P.ds <= s1);
     for (let i = 0; i < P.N; i += step) {
       const k = P.curvature[i];
       const side = k > 0 ? -1 : 1; // outside of the corner
       const wall = side > 0 ? P.wallL[i] + P.tyreL[i] : P.wallR[i] + P.tyreR[i];
-      const lat = side * (wall + 4.5);
-      cams.push({
-        x: P.px[i] + P.leftX(i) * lat,
-        z: P.pz[i] + P.leftZ(i) * lat,
-        y: P.py[i] + 7,
-      });
+      const at = (lat, up) => ({ x: P.px[i] + P.leftX(i) * side * lat, z: P.pz[i] + P.leftZ(i) * side * lat, y: P.py[i] + up });
+      if (tunnel(i)) {
+        cams.push(at(wall + 0.1, 5.2));
+        continue;
+      }
+      const cam = at(wall + 4.5, 7);
+      const roof = this.city?.roofAt(cam.x, cam.z, 2);
+      cams.push(roof != null && roof > cam.y - 4 ? at(wall + 0.5, 7) : cam);
     }
     return cams;
   }
